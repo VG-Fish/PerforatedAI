@@ -1821,7 +1821,7 @@ def count_params(net):
         return UPB.pb_count_params(net)
     parameters = net.named_parameters()
     unique_params = {
-        p.data_ptr(): p for name, p in parameters if "parent_module" not in name
+        id(p): p for name, p in parameters if "parent_module" not in name
     }.values()
     return sum(p.numel() for p in unique_params)
 

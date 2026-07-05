@@ -1,0 +1,166 @@
+# Original Code from https://discuss.huggingface.co/t/how-to-train-mnist-with-trainer/64960
+# NEURON EDIT: adapted to run on AWS Trainium (torch-neuronx / XLA)
+# Purpose: A/B test — same HF Trainer machinery as train_bert_pai.py, simple model.
+# If this hangs at first backward -> Trainer/accelerate/MpDeviceLoader x PAI x XLA issue.
+# If this trains -> the BERT hang is model/config-specific.
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
+from transformers import Trainer, TrainingArguments
+import numpy as np
+import evaluate
+
+
+from perforatedai import globals_perforatedai as GPA
+from perforatedai import utils_perforatedai as UPA
+
+
+GPA.pc.set_switch_mode(GPA.pc.DOING_HISTORY)
+GPA.pc.set_n_epochs_to_switch(200)
+# Only used if perforatedbp is installed
+# GPA.pc.set_p_epochs_to_switch(200)
+
+GPA.pc.set_output_dimensions([-1, 0, -1, -1])
+GPA.pc.set_history_lookback(1)
+GPA.pc.set_max_dendrites(5)
+GPA.pc.set_testing_dendrite_capacity(False)
+
+# NEURON EDIT (Experiment 1): PAI-level tracing so the last printed line
+# identifies exactly which module's backward hook ran / hung.
+# filter_backward prints "<layer_name> calling backward" on entry (extra_verbose)
+# and "setting d shape for" before buffer setup (verbose).
+GPA.pc.set_extra_verbose(True)
+GPA.pc.set_verbose(True)
+
+
+class BasicNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv2d(1, 4, 5, 2)
+        self.conv2 = nn.Conv2d(4, 8, 5, 2)
+        self.dropout1 = nn.Dropout(0.25)
+        self.dropout2 = nn.Dropout(0.5)
+        self.fc1 = nn.Linear(32, 16)
+        self.fc2 = nn.Linear(16, 10)
+        self.act = F.relu
+
+    def forward(self, pixel_values, labels=None):
+        x = self.act(self.conv1(pixel_values))
+        x = self.act(self.conv2(x))
+        x = F.max_pool2d(x, 2)
+        x = self.dropout1(x)
+        x = torch.flatten(x, 1)
+        x = self.act(self.fc1(x))
+        x = self.dropout2(x)
+        x = self.fc2(x)
+        # FIXED: Return raw logits, not log_softmax
+        # The log_softmax will be applied in compute_loss
+        return x
+
+
+# NEURON EDIT: use the XLA device (per AWS Neuron docs: xm.xla_device() or 'xla'),
+# with fallback so the script stays portable to CUDA/CPU boxes.
+try:
+    import torch_xla.core.xla_model as xm
+
+    device = xm.xla_device()
+    GPA.pc.set_device("xla")
+except ImportError:
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Using device: {device}")
+
+transform = transforms.Compose(
+    [transforms.ToTensor(), transforms.Normalize((0.1307), (0.3081))]
+)
+
+train_dset = datasets.MNIST("data", train=True, download=True, transform=transform)
+test_dset = datasets.MNIST("data", train=False, transform=transform)
+
+train_loader = torch.utils.data.DataLoader(train_dset, shuffle=True, batch_size=64)
+test_loader = torch.utils.data.DataLoader(test_dset, shuffle=False, batch_size=64)
+
+model = BasicNet()
+GPA.metric = "eval_accuracy"
+model.to(device)
+model = UPA.perforate_model(model)
+
+training_args = TrainingArguments(
+    "basic-trainer",
+    optim="adamw_torch",
+    per_device_train_batch_size=64,
+    per_device_eval_batch_size=64,
+    num_train_epochs=100000,
+    eval_strategy="epoch",
+    remove_unused_columns=False,
+    dataloader_drop_last=False,  # CRITICAL: Don't drop incomplete batches
+    # NEURON NOTE: drop_last=False means the final partial batch has a different
+    # tensor shape -> one extra XLA graph compilation per split. Harmless for
+    # this hang-test; flip to True later if compile time matters.
+)
+
+
+accuracy_metric = evaluate.load("accuracy")
+
+
+def compute_metrics(eval_pred):
+    logits, labels = eval_pred
+    predictions = np.argmax(logits, axis=1)
+    accuracy = accuracy_metric.compute(predictions=predictions, references=labels)[
+        "accuracy"
+    ]
+    return {"accuracy": accuracy}
+
+
+def collate_fn(examples):
+    pixel_values = torch.stack([example[0] for example in examples])
+    labels = torch.tensor([example[1] for example in examples])
+    return {"x": pixel_values, "labels": labels}
+
+
+class MyTrainer(Trainer):
+    def compute_loss(
+        self, model, inputs, num_items_in_batch=None, return_outputs=False
+    ):
+        outputs = model(inputs["x"])
+        target = inputs["labels"]
+        # FIXED: Apply log_softmax here before computing nll_loss
+        # Or use cross_entropy which combines softmax + nll_loss
+        loss = F.cross_entropy(outputs, target)
+        return (loss, outputs) if return_outputs else loss
+
+    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+        """
+        Override prediction_step to ensure we're getting the right outputs
+        """
+        inputs = self._prepare_inputs(inputs)
+
+        with torch.no_grad():
+            outputs = model(inputs["x"])
+            labels = inputs["labels"]
+            loss = F.cross_entropy(outputs, labels)
+
+        if prediction_loss_only:
+            return (loss, None, None)
+
+        # Return loss, logits, and labels
+        # Make sure logits are on CPU for aggregation
+        # NEURON NOTE: .cpu() on XLA tensors forces a sync here — expected and
+        # fine during eval; just don't be surprised by a pause at epoch end.
+        return (loss, outputs.cpu(), labels.cpu())
+
+
+trainer = MyTrainer(
+    model,
+    training_args,
+    train_dataset=train_dset,
+    eval_dataset=test_dset,
+    data_collator=collate_fn,
+    compute_metrics=compute_metrics,
+    using_perforatedai=True,
+)
+
+trainer.train()
