@@ -935,7 +935,15 @@ def init_params(module, neuron_main_module):
     """
     for param in module.parameters():
         if param.dtype == torch.uint8:
-            param.data = torch.randint(0, 256, param.size(), dtype=torch.uint8)
+            param.copy_(
+                torch.randint(
+                    0,
+                    256,
+                    param.size(),
+                    device=param.device,
+                    dtype=param.dtype,
+                )
+            )
         else:
             # If factoring in the main modules weights multiply the randn()
             #  by the average abs value of the main modules weights
@@ -952,8 +960,12 @@ def init_params(module, neuron_main_module):
                 multiplier = main_module_abs
             else:
                 multiplier = 1.0
-            param.data = (
-                torch.randn(param.size(), dtype=param.dtype)
+            param.copy_(
+                torch.randn(
+                    param.size(),
+                    device=param.device,
+                    dtype=param.dtype,
+                )
                 * GPA.pc.get_candidate_weight_initialization_multiplier()
                 * multiplier
             )
