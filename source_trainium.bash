@@ -1,0 +1,1 @@
+source /opt/aws_neuronx_venv_pytorch_2_9_nxd_training/bin/activate

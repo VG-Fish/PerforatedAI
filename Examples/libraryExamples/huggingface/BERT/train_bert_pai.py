@@ -72,6 +72,7 @@ from transformers import (
     EarlyStoppingCallback,
     BertForSequenceClassification,
     RobertaForSequenceClassification,
+    BertConfig,
 )
 
 # Import PAI modules
@@ -144,7 +145,7 @@ def load_imdb_dataset(
     os.makedirs(cache_dir, exist_ok=True)
 
     # Download the IMDB dataset
-    dataset = load_dataset("imdb", cache_dir=cache_dir)
+    dataset = load_dataset("stanfordnlp/imdb", cache_dir=cache_dir)
 
     # Function to create stratified split
     def stratified_split(dataset, test_size=0.1, seed=42):
@@ -195,7 +196,7 @@ def load_imdb_dataset(
     def tokenize_and_convert(dataset):
         texts = dataset["text"]
         labels = dataset["label"]
-        encodings = tokenizer(texts, truncation=True, padding=True, max_length=max_len)
+        encodings = tokenizer(texts, truncation=True, padding="max_length", max_length=max_len)
         return SentimentDataset(encodings, labels)
 
     """    
@@ -205,19 +206,19 @@ def load_imdb_dataset(
     """
     train_dataset = train_data.map(
         lambda examples: tokenizer(
-            examples["text"], truncation=True, padding=True, max_length=max_len
+            examples["text"], truncation=True, padding="max_length", max_length=max_len
         ),
         batched=True,
     )
     dev_dataset = dev_data.map(
         lambda examples: tokenizer(
-            examples["text"], truncation=True, padding=True, max_length=max_len
+            examples["text"], truncation=True, padding="max_length", max_length=max_len
         ),
         batched=True,
     )
     test_dataset = test_data.map(
         lambda examples: tokenizer(
-            examples["text"], truncation=True, padding=True, max_length=max_len
+            examples["text"], truncation=True, padding="max_length", max_length=max_len
         ),
         batched=True,
     )
@@ -289,7 +290,7 @@ def set_GPA_params(args):
     GPA.pc.set_max_dendrites(args.max_dendrites)
     GPA.pc.set_testing_dendrite_capacity(False)
     GPA.pc.set_improvement_threshold(args.improvement_threshold)
-    GPA.pc.set_pb_improvement_threshold(args.pb_improvement_threshold)
+    GPA.pc.set_pai_improvement_threshold(args.pb_improvement_threshold)
     GPA.pc.set_improvement_threshold_raw(args.pb_improvement_threshold_raw)
     GPA.pc.set_unwrapped_modules_confirmed(args.unwrapped_modules_confirmed)
     GPA.pc.set_cap_at_n(args.cap_at_n)
@@ -532,16 +533,15 @@ def main():
     set_GPA_params(args)
 
     # Load tokenizer.
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-
+    tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
     # Set number of labels and load model configuration.
     if args.dataset == "imdb":
         num_labels = 2
     else:  # snli
         num_labels = 3
 
-    config = AutoConfig.from_pretrained(args.model_name, num_labels=num_labels)
-
+    #config = AutoConfig.from_pretrained(args.model_name, num_labels=num_labels)
+    config = BertConfig.from_pretrained(args.model_name, num_labels=num_labels)
     # Compression for model width
     if args.width < 1.0:
         config = resize_model_hidden_size(config, args.width)
@@ -556,7 +556,7 @@ def main():
 
     # Load pretrained model
     print(f"Loading pretrained model from {args.model_name}...")
-    base_model = AutoModelForSequenceClassification.from_pretrained(
+    base_model = BertForSequenceClassification.from_pretrained(
         args.model_name, config=config, ignore_mismatched_sizes=True
     )
 
@@ -593,6 +593,7 @@ def main():
         GPA.pc.append_replacement_modules([BertForSequenceClassificationPB])
         GPA.pc.append_module_names_to_track(["Embeddings"])
         GPA.pc.append_module_names_to_track(["Embedding"])
+        GPA.pc.append_module_names_to_track(["LayerNorm"])
         """
 
         if args.wrap_full_model:
@@ -609,7 +610,7 @@ def main():
 
             # Wrap the classifier with our custom wrapper
             if hasattr(base_model, "classifier"):
-                base_model.classifier = ClassifierWrapper(base_model.classifier)
+  qqqq              base_model.classifier = ClassifierWrapper(base_model.classifier)
                 GPA.pc.append_module_names_to_perforate(["ClassifierWrapper"])
 
             # Also wrap pre_classifier if it exists
@@ -622,27 +623,23 @@ def main():
         )
     else:
         raise ValueError(f"Unsupported model: {args.model_name}")
+    #GPA.pc.set_verbose(True)
+    #GPA.pc.set_extra_verbose(False)
 
+    '''
     # Convert model to be compatible with PB and initialize PB tracking
     UPA.perforate_model(
         model,
         save_name=GPA.pc.get_save_name(),
         maximizing_score=args.maximizing_score,
     )
-    # Set input dimensions for the model
-    for layer_name, layer in dict(model.named_modules()).items():
-        try:
-            if "roberta" in args.model_name:
-                if layer_name in ["roberta.pooler", "roberta.pooler.dense", "classifier", "classifier.dense", "classifier.out_proj"]:
-                    layer.set_this_output_dimensions([-1, 0])
-            elif "bert" in args.model_name:
-                if layer_name in ["bert.pooler", "bert.pooler.dense", "classifier"]:
-                    layer.set_this_output_dimensions([-1, 0])
-        except Exception as e:
-            print(f"Could not set input dimensions for {layer_name}: {e}")
+    '''
 
-    # Move model to device.
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    try:
+        import torch_xla.core.xla_model as xm
+        device = xm.xla_device()
+    except ImportError:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
     model = model.to(device)
 
     # Print parameter counts.
@@ -685,7 +682,7 @@ def main():
         save_total_limit=args.save_total_limit,
         save_strategy=args.save_strategy,
         save_steps=args.save_steps,
-        evaluation_strategy=args.evaluation_strategy,
+        eval_strategy=args.evaluation_strategy,
         eval_steps=args.eval_steps,
         learning_rate=args.lr,
         seed=args.seed,
@@ -730,6 +727,24 @@ def main():
 
     # Start training.
     print("Starting training...")
+    # Convert model to be compatible with PB and initialize PB tracking
+    UPA.perforate_model(
+        model,
+        save_name=GPA.pc.get_save_name(),
+        maximizing_score=args.maximizing_score,
+    )
+    # Set input dimensions for the model
+    for layer_name, layer in dict(model.named_modules()).items():
+        try:
+            if "roberta" in args.model_name:
+                if layer_name in ["roberta.pooler", "roberta.pooler.dense", "classifier", "classifier.dense", "classifier.out_proj"]:
+                    layer.set_this_output_dimensions([-1, 0])
+            elif "bert" in args.model_name:
+                if layer_name in ["bert.pooler", "bert.pooler.dense", "classifier"]:
+                    layer.set_this_output_dimensions([-1, 0])
+        except Exception as e:
+            print(f"Could not set input dimensions for {layer_name}: {e}")
+
     trainer.train()
 
     # Evaluate on test set.
