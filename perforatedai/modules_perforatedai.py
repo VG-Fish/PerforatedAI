@@ -142,8 +142,13 @@ def filter_backward(grad_out, values):
 
     with torch.no_grad():
         val = grad_out.detach()
+        # Avoid repeated XLA host sync from tensor.item() on every batch.
+        current_d_initialized = getattr(values[0], "_current_d_initialized", None)
+        if current_d_initialized is None:
+            current_d_initialized = bool(values[0].current_d_init.item())
+            values[0]._current_d_initialized = current_d_initialized
         # If the input dimensions are not initialized
-        if not values[0].current_d_init.item():
+        if not current_d_initialized:
             # If input dimensions and gradient don't have same shape trigger error and quit
             if len(values[0].this_output_dimensions) != len(grad_out.shape):
                 print(
@@ -204,6 +209,7 @@ def filter_backward(grad_out, values):
                 values[0].setup_arrays(values[0].out_channels)
             # Flag that it has been setup
             values[0].current_d_init[0] = 1
+            values[0]._current_d_initialized = True
         if GPA.pc.get_perforated_backpropagation():
             MPB.filter_backward_pb(val, values)
 
