@@ -138,7 +138,18 @@ def filter_backward(grad_out, values):
     None
     """
     if GPA.pc.get_extra_verbose():
-        print(f"{values[0].layer_name} calling backward")
+        # Avoid unbounded stdout spam in tight backward loops (can look like hangs on XLA).
+        backward_print_limit = int(os.environ.get("PAI_BACKWARD_PRINT_LIMIT", "20"))
+        backward_print_count = getattr(values[0], "_backward_print_count", 0)
+        if backward_print_limit <= 0 or backward_print_count < backward_print_limit:
+            print(f"{values[0].layer_name} calling backward")
+        elif backward_print_count == backward_print_limit:
+            print(
+                f"[PAI XLA DEBUG] suppressing further backward prints for {values[0].layer_name}; "
+                f"set PAI_BACKWARD_PRINT_LIMIT=0 for unlimited",
+                flush=True,
+            )
+        values[0]._backward_print_count = backward_print_count + 1
 
     with torch.no_grad():
         val = grad_out.detach()

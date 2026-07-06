@@ -4,6 +4,8 @@
 # If this hangs at first backward -> Trainer/accelerate/MpDeviceLoader x PAI x XLA issue.
 # If this trains -> the BERT hang is model/config-specific.
 
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -29,12 +31,11 @@ GPA.pc.set_history_lookback(1)
 GPA.pc.set_max_dendrites(5)
 GPA.pc.set_testing_dendrite_capacity(False)
 
-# NEURON EDIT (Experiment 1): PAI-level tracing so the last printed line
-# identifies exactly which module's backward hook ran / hung.
-# filter_backward prints "<layer_name> calling backward" on entry (extra_verbose)
-# and "setting d shape for" before buffer setup (verbose).
-GPA.pc.set_extra_verbose(True)
-GPA.pc.set_verbose(True)
+# NEURON EDIT: keep hook-level tracing opt-in. Always-on prints in backward
+# can dominate runtime on XLA and look like a hang.
+debug_pai_hooks = os.environ.get("PAI_DEBUG_HOOKS", "0") == "1"
+GPA.pc.set_extra_verbose(debug_pai_hooks)
+GPA.pc.set_verbose(debug_pai_hooks)
 
 
 class BasicNet(nn.Module):
