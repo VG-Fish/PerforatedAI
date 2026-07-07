@@ -178,7 +178,12 @@ def train_one_epoch(
             running_kd_sum = running_kd_sum + kd_loss.detach() * batch_size
 
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
-        if not args.use_xla:
+        if args.use_xla:
+            # Keep meters non-empty for log_every string formatting without sync.
+            metric_logger.update(loss=0.0, ce=0.0, kd=0.0)
+            metric_logger.meters["acc1"].update(0.0, n=batch_size)
+            metric_logger.meters["acc5"].update(0.0, n=batch_size)
+        else:
             acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
             metric_logger.update(loss=loss.item())
             metric_logger.update(ce=ce_loss.item(), kd=kd_loss.item())
@@ -263,7 +268,11 @@ def train_one_epoch_supervised(
             running_loss_sum = running_loss_sum + loss.detach() * batch_size
 
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
-        if not args.use_xla:
+        if args.use_xla:
+            metric_logger.update(loss=0.0)
+            metric_logger.meters["acc1"].update(0.0, n=batch_size)
+            metric_logger.meters["acc5"].update(0.0, n=batch_size)
+        else:
             acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
             metric_logger.update(loss=loss.item())
             metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
@@ -305,6 +314,9 @@ def evaluate_plain(model, criterion, data_loader, device, print_freq=100, log_su
                 running_correct = running_correct + pred.eq(target_for_acc).sum()
                 running_total += batch_size
                 running_loss_sum = running_loss_sum + loss.detach() * batch_size
+                metric_logger.update(loss=0.0)
+                metric_logger.meters["acc1"].update(0.0, n=batch_size)
+                metric_logger.meters["acc5"].update(0.0, n=batch_size)
             else:
                 acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
                 metric_logger.update(loss=loss.item())
@@ -438,6 +450,9 @@ def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix="
                 running_correct = running_correct + pred.eq(target_for_acc).sum()
                 running_total += batch_size
                 running_loss_sum = running_loss_sum + loss.detach() * batch_size
+                metric_logger.update(loss=0.0)
+                metric_logger.meters["acc1"].update(0.0, n=batch_size)
+                metric_logger.meters["acc5"].update(0.0, n=batch_size)
             else:
                 acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
                 metric_logger.update(loss=loss.item())
@@ -513,6 +528,9 @@ def test(model, criterion, data_loader, device, print_freq=100, log_suffix=""):
                 running_correct = running_correct + pred.eq(target_for_acc).sum()
                 running_total += batch_size
                 running_loss_sum = running_loss_sum + loss.detach() * batch_size
+                metric_logger.update(loss=0.0)
+                metric_logger.meters["acc1"].update(0.0, n=batch_size)
+                metric_logger.meters["acc5"].update(0.0, n=batch_size)
             else:
                 acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
                 metric_logger.update(loss=loss.item())
@@ -1689,7 +1707,8 @@ def get_args_parser(add_help=True):
     )
     parser.add_argument(
         "--download-food101",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="download Food-101 to --data-path if missing",
     )
     parser.add_argument(
@@ -1765,10 +1784,10 @@ def get_args_parser(add_help=True):
     parser.add_argument(
         "--wd",
         "--weight-decay",
-        default=1e-4,
+        default=1e-3,
         type=float,
         metavar="W",
-        help="weight decay (default: 1e-4)",
+        help="weight decay (default: 1e-3)",
         dest="weight_decay",
     )
     parser.add_argument(
@@ -1791,16 +1810,16 @@ def get_args_parser(add_help=True):
     )
     parser.add_argument(
         "--label-smoothing",
-        default=0.0,
+        default=0.1,
         type=float,
-        help="label smoothing (default: 0.0)",
+        help="label smoothing (default: 0.1)",
         dest="label_smoothing",
     )
     parser.add_argument(
-        "--mixup-alpha", default=0.0, type=float, help="mixup alpha (default: 0.0)"
+        "--mixup-alpha", default=0.2, type=float, help="mixup alpha (default: 0.2)"
     )
     parser.add_argument(
-        "--cutmix-alpha", default=0.0, type=float, help="cutmix alpha (default: 0.0)"
+        "--cutmix-alpha", default=0.6, type=float, help="cutmix alpha (default: 0.6)"
     )
     parser.add_argument(
         "--lr-scheduler",
@@ -1869,9 +1888,9 @@ def get_args_parser(add_help=True):
     )
     parser.add_argument(
         "--auto-augment",
-        default=None,
+        default="ta_wide",
         type=lambda x: None if x == "None" else x,
-        help="auto augment policy (default: None)",
+        help="auto augment policy (default: ta_wide)",
     )
     parser.add_argument(
         "--ra-magnitude", default=9, type=int, help="magnitude of auto augment policy"
@@ -1881,17 +1900,17 @@ def get_args_parser(add_help=True):
     )
     parser.add_argument(
         "--random-erase",
-        default=0.0,
+        default=0.2,
         type=float,
-        help="random erasing probability (default: 0.0)",
+        help="random erasing probability (default: 0.2)",
     )
 
     # Regularization parameters to reduce overfitting (train-val gap)
     parser.add_argument(
         "--dropout",
-        default=0.0,
+        default=0.2,
         type=float,
-        help="dropout rate (default: 0.0, no dropout)",
+        help="dropout rate (default: 0.2)",
     )
     parser.add_argument(
         "--width-multiplier",
@@ -2039,7 +2058,7 @@ def get_args_parser(add_help=True):
     )
     parser.add_argument(
         "--dendrite-mode",
-        default=2,
+        default=1,
         type=int,
         choices=[0, 1, 2],
         help="Dendrite mode: 0=no dendrites, 1=GD dendrites, 2=PB dendrites (default: 2)",
