@@ -21,6 +21,14 @@ from perforatedai import globals_perforatedai as GPA
 from perforatedai import utils_perforatedai as UPA
 
 
+if os.environ.get("PAI_NEURON_SHARED_CACHE", "0") != "1":
+    # Avoid waiting on stale/parallel compile cache locks from other runs.
+    run_cache_dir = f"/tmp/neuron-compile-cache-pai-{os.getpid()}"
+    os.makedirs(run_cache_dir, exist_ok=True)
+    os.environ["NEURON_COMPILE_CACHE_URL"] = run_cache_dir
+    print(f"Using isolated Neuron compile cache: {os.environ['NEURON_COMPILE_CACHE_URL']}")
+
+
 GPA.pc.set_switch_mode(GPA.pc.DOING_HISTORY)
 GPA.pc.set_n_epochs_to_switch(200)
 # Only used if perforatedbp is installed
@@ -66,9 +74,9 @@ class BasicNet(nn.Module):
 # NEURON EDIT: use the XLA device (per AWS Neuron docs: xm.xla_device() or 'xla'),
 # with fallback so the script stays portable to CUDA/CPU boxes.
 try:
-    import torch_xla.core.xla_model as xm
+    import torch_xla
 
-    device = xm.xla_device()
+    device = torch_xla.device()
     GPA.pc.set_device("xla")
 except ImportError:
     device = "cuda" if torch.cuda.is_available() else "cpu"
