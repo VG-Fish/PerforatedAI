@@ -104,6 +104,8 @@ def train_one_epoch(
     metric_logger.add_meter("kd", utils.SmoothedValue(window_size=10, fmt="{value}"))
 
     header = f"Epoch: [{epoch}]"
+    running_correct = torch.zeros((), device=device) if args.use_xla else 0.0
+    running_total = 0
 
     for i, (image, target) in enumerate(
         metric_logger.log_every(data_loader, args.print_freq, header)
@@ -155,17 +157,43 @@ def train_one_epoch(
                 # Reset ema buffer to keep copying weights during warmup period
                 model_ema.n_averaged.fill_(0)
 
-        acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
         batch_size = image.shape[0]
-        metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
-        metric_logger.update(ce=ce_loss.item(), kd=kd_loss.item())
-        metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
-        metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
+        if target.ndim == 2:
+            target_for_acc = target.argmax(dim=1)
+        else:
+            target_for_acc = target
+        pred = output.argmax(dim=1)
+        correct1 = pred.eq(target_for_acc).sum()
+        if args.use_xla:
+            running_correct = running_correct + correct1
+        else:
+            running_correct += float(correct1.item())
+        running_total += batch_size
+
+        should_log_metrics = (not args.use_xla) or (i % args.print_freq == 0)
+        metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+        if should_log_metrics:
+            if args.use_xla:
+                # Keep Trainium fast by avoiding host sync on every step.
+                acc1 = correct1.to(torch.float32) * (100.0 / batch_size)
+                acc5 = acc1
+            else:
+                acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
+            metric_logger.update(loss=loss.item())
+            metric_logger.update(ce=ce_loss.item(), kd=kd_loss.item())
+            metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
+            metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
         metric_logger.meters["img/s"].update(batch_size / (time.time() - start_time))
 
     # Add training accuracies to PerforatedAI tracker
-    GPA.pai_tracker.add_extra_score(metric_logger.acc1.global_avg, "Train Acc 1")
-    GPA.pai_tracker.add_extra_score(metric_logger.acc5.global_avg, "Train Acc 5")
+    if args.use_xla and running_total > 0:
+        train_acc1 = (running_correct * (100.0 / running_total)).item()
+        train_acc5 = train_acc1
+    else:
+        train_acc1 = metric_logger.acc1.global_avg
+        train_acc5 = metric_logger.acc5.global_avg
+    GPA.pai_tracker.add_extra_score(train_acc1, "Train Acc 1")
+    GPA.pai_tracker.add_extra_score(train_acc5, "Train Acc 5")
 
 
 def train_one_epoch_supervised(
@@ -182,6 +210,8 @@ def train_one_epoch_supervised(
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter("lr", utils.SmoothedValue(window_size=1, fmt="{value}"))
     header = f"Teacher Epoch: [{epoch}]"
+    running_correct = torch.zeros((), device=device) if args.use_xla else 0.0
+    running_total = 0
 
     for image, target in metric_logger.log_every(data_loader, args.print_freq, header):
         image, target = image.to(device), target.to(device)
@@ -208,13 +238,37 @@ def train_one_epoch_supervised(
             else:
                 optimizer.step()
 
-        acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
         batch_size = image.shape[0]
-        metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
-        metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
-        metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
+        if target.ndim == 2:
+            target_for_acc = target.argmax(dim=1)
+        else:
+            target_for_acc = target
+        pred = output.argmax(dim=1)
+        correct1 = pred.eq(target_for_acc).sum()
+        if args.use_xla:
+            running_correct = running_correct + correct1
+        else:
+            running_correct += float(correct1.item())
+        running_total += batch_size
+
+        should_log_metrics = (not args.use_xla) or (i % args.print_freq == 0)
+        metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+        if should_log_metrics:
+            if args.use_xla:
+                acc1 = correct1.to(torch.float32) * (100.0 / batch_size)
+                acc5 = acc1
+            else:
+                acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
+            metric_logger.update(loss=loss.item())
+            metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
+            metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
 
     metric_logger.synchronize_between_processes()
+    if args.use_xla and running_total > 0:
+        final_acc1 = (running_correct * (100.0 / running_total)).item()
+        final_acc5 = final_acc1
+        print(f"{header} Acc@1 {final_acc1:.3f} Acc@5 {final_acc5:.3f}")
+        return
     print(
         f"{header} Acc@1 {metric_logger.acc1.global_avg:.3f} Acc@5 {metric_logger.acc5.global_avg:.3f}"
     )
