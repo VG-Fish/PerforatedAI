@@ -139,7 +139,8 @@ def train_one_epoch(
             if args.clip_grad_norm is not None:
                 nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
             if args.use_xla:
-                xm.optimizer_step(optimizer, barrier=True)
+                # Avoid forcing a host-side barrier every step; this improves throughput.
+                xm.optimizer_step(optimizer, barrier=False)
             else:
                 optimizer.step()
 
@@ -197,7 +198,8 @@ def train_one_epoch_supervised(
             if args.clip_grad_norm is not None:
                 nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
             if args.use_xla:
-                xm.optimizer_step(optimizer, barrier=True)
+                # Avoid forcing a host-side barrier every step; this improves throughput.
+                xm.optimizer_step(optimizer, barrier=False)
             else:
                 optimizer.step()
 
@@ -224,9 +226,6 @@ def evaluate_plain(model, criterion, data_loader, device, print_freq=100, log_su
             target = target.to(device, non_blocking=True)
             output = model(image)
             loss = criterion(output, target)
-
-            if is_xla_device(device):
-                xla_sync_step()
 
             acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
             batch_size = image.shape[0]
@@ -343,9 +342,6 @@ def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix="
             output = model(image)
             loss = criterion(output, target)
 
-            if is_xla_device(device):
-                xla_sync_step()
-
             acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
             # FIXME need to take into account that the datasets
             # could have been padded in distributed setup
@@ -398,9 +394,6 @@ def test(model, criterion, data_loader, device, print_freq=100, log_suffix=""):
             target = target.to(device, non_blocking=True)
             output = model(image)
             loss = criterion(output, target)
-
-            if is_xla_device(device):
-                xla_sync_step()
 
             acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
             batch_size = image.shape[0]
