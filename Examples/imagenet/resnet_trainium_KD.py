@@ -108,7 +108,7 @@ def train_one_epoch(
 
         teacher_output = None
         if args.use_kd and teacher_model is not None:
-            with torch.inference_mode():
+            with torch.no_grad():
                 teacher_output = teacher_model(image)
 
         with maybe_autocast(device, scaler):
@@ -218,7 +218,7 @@ def evaluate_plain(model, criterion, data_loader, device, print_freq=100, log_su
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = f"EvalPlain: {log_suffix}"
 
-    with torch.inference_mode():
+    with torch.no_grad():
         for image, target in metric_logger.log_every(data_loader, print_freq, header):
             image = image.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
@@ -336,7 +336,7 @@ def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix="
 
     num_processed_samples = 0
 
-    with torch.inference_mode():
+    with torch.no_grad():
         for image, target in metric_logger.log_every(data_loader, print_freq, header):
             image = image.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
@@ -392,7 +392,7 @@ def test(model, criterion, data_loader, device, print_freq=100, log_suffix=""):
 
     num_processed_samples = 0
 
-    with torch.inference_mode():
+    with torch.no_grad():
         for image, target in metric_logger.log_every(data_loader, print_freq, header):
             image = image.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
@@ -1626,7 +1626,7 @@ def get_args_parser(add_help=True):
     parser.add_argument(
         "-j",
         "--workers",
-        default=16,
+        default=8,
         type=int,
         metavar="N",
         help="number of data loading workers (default: 16)",
