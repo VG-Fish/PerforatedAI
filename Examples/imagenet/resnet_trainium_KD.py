@@ -70,10 +70,15 @@ def compute_ce_loss(criterion, output, target):
 
 def compute_accuracy(output, target, topk=(1, 5)):
     # Neuron Trn2 does not support the XLA sort op emitted by topk accuracy.
-    # Move logits/targets to CPU for metric computation when on XLA.
+    # Keep metric computation on-device and use top-1 fallback on XLA.
     if output.device.type == "xla":
-        output = output.detach().to("cpu")
-        target = target.detach().to("cpu")
+        if target.ndim == 2:
+            target = target.argmax(dim=1)
+        pred = output.argmax(dim=1)
+        correct = pred.eq(target).sum(dtype=torch.float32)
+        acc1 = correct * (100.0 / target.size(0))
+        # For XLA, avoid top-k sort to keep graph small and compilable.
+        return [acc1 for _ in topk]
     return utils.accuracy(output, target, topk=topk)
 
 
@@ -1155,6 +1160,8 @@ def main(args):
     GPA.pc.set_initial_history_after_switches(2)
     GPA.pc.set_test_saves(True)
     GPA.pc.set_testing_dendrite_capacity(False)
+    if hasattr(GPA.pc, "set_unwrapped_modules_confirmed"):
+        GPA.pc.set_unwrapped_modules_confirmed(True)
     GPA.pc.append_module_names_to_perforate(["BasicBlock", "Bottleneck"])
     GPA.pc.set_verbose(False)
     # GPA.pc.set_max_dendrites(3)
