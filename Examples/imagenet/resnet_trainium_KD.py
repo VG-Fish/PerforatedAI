@@ -144,8 +144,8 @@ def train_one_epoch(
             if args.clip_grad_norm is not None:
                 nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
             if args.use_xla:
-                # Avoid forcing a host-side barrier every step; this improves throughput.
-                xm.optimizer_step(optimizer, barrier=False)
+                # On XLA, force a step boundary each iteration to avoid graph accumulation.
+                xm.optimizer_step(optimizer, barrier=True)
             else:
                 optimizer.step()
 
@@ -203,8 +203,8 @@ def train_one_epoch_supervised(
             if args.clip_grad_norm is not None:
                 nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
             if args.use_xla:
-                # Avoid forcing a host-side barrier every step; this improves throughput.
-                xm.optimizer_step(optimizer, barrier=False)
+                # On XLA, force a step boundary each iteration to avoid graph accumulation.
+                xm.optimizer_step(optimizer, barrier=True)
             else:
                 optimizer.step()
 
