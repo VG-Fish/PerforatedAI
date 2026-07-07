@@ -68,6 +68,15 @@ def compute_ce_loss(criterion, output, target):
     return criterion(output, target)
 
 
+def compute_accuracy(output, target, topk=(1, 5)):
+    # Neuron Trn2 does not support the XLA sort op emitted by topk accuracy.
+    # Move logits/targets to CPU for metric computation when on XLA.
+    if output.device.type == "xla":
+        output = output.detach().to("cpu")
+        target = target.detach().to("cpu")
+    return utils.accuracy(output, target, topk=topk)
+
+
 def train_one_epoch(
     model,
     teacher_model,
@@ -140,7 +149,7 @@ def train_one_epoch(
                 # Reset ema buffer to keep copying weights during warmup period
                 model_ema.n_averaged.fill_(0)
 
-        acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
+        acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
         batch_size = image.shape[0]
         metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(ce=ce_loss.item(), kd=kd_loss.item())
@@ -192,7 +201,7 @@ def train_one_epoch_supervised(
             else:
                 optimizer.step()
 
-        acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
+        acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
         batch_size = image.shape[0]
         metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
         metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
@@ -219,7 +228,7 @@ def evaluate_plain(model, criterion, data_loader, device, print_freq=100, log_su
             if is_xla_device(device):
                 xla_sync_step()
 
-            acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
+            acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
             batch_size = image.shape[0]
             metric_logger.update(loss=loss.item())
             metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
@@ -337,7 +346,7 @@ def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix="
             if is_xla_device(device):
                 xla_sync_step()
 
-            acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
+            acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
             # FIXME need to take into account that the datasets
             # could have been padded in distributed setup
             batch_size = image.shape[0]
@@ -393,7 +402,7 @@ def test(model, criterion, data_loader, device, print_freq=100, log_suffix=""):
             if is_xla_device(device):
                 xla_sync_step()
 
-            acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
+            acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
             batch_size = image.shape[0]
             metric_logger.update(loss=loss.item())
             metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
