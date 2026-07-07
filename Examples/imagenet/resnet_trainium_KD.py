@@ -34,6 +34,7 @@ from types import SimpleNamespace
 
 # NEURON EDIT: XLA device support (per AWS Neuron docs)
 try:
+    import torch_xla
     import torch_xla.core.xla_model as xm
 
     HAS_XLA = True
@@ -47,6 +48,11 @@ KD_TEMPERATURE = 4.0
 
 def is_xla_device(device):
     return HAS_XLA and str(device).startswith("xla")
+
+
+def xla_sync_step():
+    if HAS_XLA:
+        torch_xla.sync()
 
 
 def maybe_autocast(device, scaler):
@@ -123,11 +129,10 @@ def train_one_epoch(
             loss.backward()
             if args.clip_grad_norm is not None:
                 nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
-            optimizer.step()
-
-        # Required for XLA lazy execution to compile/execute each step.
-        if args.use_xla:
-            xm.mark_step()
+            if args.use_xla:
+                xm.optimizer_step(optimizer, barrier=True)
+            else:
+                optimizer.step()
 
         if model_ema and i % args.model_ema_steps == 0:
             model_ema.update_parameters(model)
@@ -182,11 +187,10 @@ def train_one_epoch_supervised(
             loss.backward()
             if args.clip_grad_norm is not None:
                 nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
-            optimizer.step()
-
-        # Required for XLA lazy execution to compile/execute each step.
-        if args.use_xla:
-            xm.mark_step()
+            if args.use_xla:
+                xm.optimizer_step(optimizer, barrier=True)
+            else:
+                optimizer.step()
 
         acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
         batch_size = image.shape[0]
@@ -213,7 +217,7 @@ def evaluate_plain(model, criterion, data_loader, device, print_freq=100, log_su
             loss = criterion(output, target)
 
             if is_xla_device(device):
-                xm.mark_step()
+                xla_sync_step()
 
             acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
             batch_size = image.shape[0]
@@ -331,7 +335,7 @@ def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix="
             loss = criterion(output, target)
 
             if is_xla_device(device):
-                xm.mark_step()
+                xla_sync_step()
 
             acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
             # FIXME need to take into account that the datasets
@@ -387,7 +391,7 @@ def test(model, criterion, data_loader, device, print_freq=100, log_suffix=""):
             loss = criterion(output, target)
 
             if is_xla_device(device):
-                xm.mark_step()
+                xla_sync_step()
 
             acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
             batch_size = image.shape[0]
