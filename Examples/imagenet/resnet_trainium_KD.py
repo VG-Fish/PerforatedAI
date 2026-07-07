@@ -8,6 +8,7 @@ import random
 import time
 import warnings
 import argparse
+from contextlib import nullcontext
 import torch.nn.functional as F
 
 import presets
@@ -48,6 +49,19 @@ def is_xla_device(device):
     return HAS_XLA and str(device).startswith("xla")
 
 
+def maybe_autocast(device, scaler):
+    if scaler is not None and device.type == "cuda":
+        return torch.amp.autocast(device_type="cuda", enabled=True)
+    return nullcontext()
+
+
+def compute_ce_loss(criterion, output, target):
+    # Mixup/CutMix produces soft targets [N, C]; Neuron CE expects class indices.
+    if target.ndim == output.ndim:
+        return -(target * F.log_softmax(output, dim=1)).sum(dim=1).mean()
+    return criterion(output, target)
+
+
 def train_one_epoch(
     model,
     teacher_model,
@@ -82,9 +96,9 @@ def train_one_epoch(
             with torch.inference_mode():
                 teacher_output = teacher_model(image)
 
-        with torch.cuda.amp.autocast(enabled=scaler is not None):
+        with maybe_autocast(device, scaler):
             output = model(image)
-            ce_loss = criterion(output, target)
+            ce_loss = compute_ce_loss(criterion, output, target)
             if args.use_kd and teacher_output is not None:
                 kd_loss = F.kl_div(
                     F.log_softmax(output / KD_TEMPERATURE, dim=1),
@@ -152,9 +166,9 @@ def train_one_epoch_supervised(
     for image, target in metric_logger.log_every(data_loader, args.print_freq, header):
         image, target = image.to(device), target.to(device)
 
-        with torch.cuda.amp.autocast(enabled=scaler is not None):
+        with maybe_autocast(device, scaler):
             output = model(image)
-            loss = criterion(output, target)
+            loss = compute_ce_loss(criterion, output, target)
 
         optimizer.zero_grad()
         if scaler is not None:
