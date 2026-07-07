@@ -170,6 +170,7 @@ trainer = MyTrainer(
     data_collator=collate_fn,
     compute_metrics=compute_metrics,
     using_perforatedai=True,
+    using_trainium=True,
 )
 
 trainer.train()
