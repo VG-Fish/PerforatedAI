@@ -12,7 +12,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
-from transformers import Trainer, TrainingArguments
+from optimum.neuron import NeuronTrainer
+from optimum.neuron.trainers import NeuronTrainingArguments
 import numpy as np
 import evaluate
 
@@ -97,13 +98,12 @@ GPA.metric = "eval_accuracy"
 model.to(device)
 model = UPA.perforate_model(model)
 
-training_args = TrainingArguments(
+training_args = NeuronTrainingArguments(
     "basic-trainer",
     optim="adamw_torch",
     per_device_train_batch_size=64,
-    per_device_eval_batch_size=64,
     num_train_epochs=100000,
-    eval_strategy="epoch",
+    eval_strategy="no",
     remove_unused_columns=False,
     dataloader_drop_last=False,  # CRITICAL: Don't drop incomplete batches
     # NEURON NOTE: drop_last=False means the final partial batch has a different
@@ -130,7 +130,7 @@ def collate_fn(examples):
     return {"x": pixel_values, "labels": labels}
 
 
-class MyTrainer(Trainer):
+class MyNeuronTrainer(NeuronTrainer):
     def compute_loss(
         self, model, inputs, num_items_in_batch=None, return_outputs=False
     ):
@@ -141,36 +141,11 @@ class MyTrainer(Trainer):
         loss = F.cross_entropy(outputs, target)
         return (loss, outputs) if return_outputs else loss
 
-    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
-        """
-        Override prediction_step to ensure we're getting the right outputs
-        """
-        inputs = self._prepare_inputs(inputs)
-
-        with torch.no_grad():
-            outputs = model(inputs["x"])
-            labels = inputs["labels"]
-            loss = F.cross_entropy(outputs, labels)
-
-        if prediction_loss_only:
-            return (loss, None, None)
-
-        # Return loss, logits, and labels
-        # Make sure logits are on CPU for aggregation
-        # NEURON NOTE: .cpu() on XLA tensors forces a sync here — expected and
-        # fine during eval; just don't be surprised by a pause at epoch end.
-        return (loss, outputs.cpu(), labels.cpu())
-
-
-trainer = MyTrainer(
+trainer = MyNeuronTrainer(
     model,
     training_args,
     train_dataset=train_dset,
-    eval_dataset=test_dset,
     data_collator=collate_fn,
-    compute_metrics=compute_metrics,
-    using_perforatedai=True,
-    using_trainium=True,
 )
 
 trainer.train()
