@@ -106,6 +106,9 @@ def train_one_epoch(
     header = f"Epoch: [{epoch}]"
     running_correct = torch.zeros((), device=device) if args.use_xla else 0.0
     running_total = 0
+    running_loss_sum = torch.zeros((), device=device) if args.use_xla else 0.0
+    running_ce_sum = torch.zeros((), device=device) if args.use_xla else 0.0
+    running_kd_sum = torch.zeros((), device=device) if args.use_xla else 0.0
 
     for i, (image, target) in enumerate(
         metric_logger.log_every(data_loader, args.print_freq, header)
@@ -169,16 +172,14 @@ def train_one_epoch(
         else:
             running_correct += float(correct1.item())
         running_total += batch_size
+        if args.use_xla:
+            running_loss_sum = running_loss_sum + loss.detach() * batch_size
+            running_ce_sum = running_ce_sum + ce_loss.detach() * batch_size
+            running_kd_sum = running_kd_sum + kd_loss.detach() * batch_size
 
-        should_log_metrics = (not args.use_xla) or (i % args.print_freq == 0)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
-        if should_log_metrics:
-            if args.use_xla:
-                # Keep Trainium fast by avoiding host sync on every step.
-                acc1 = correct1.to(torch.float32) * (100.0 / batch_size)
-                acc5 = acc1
-            else:
-                acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
+        if not args.use_xla:
+            acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
             metric_logger.update(loss=loss.item())
             metric_logger.update(ce=ce_loss.item(), kd=kd_loss.item())
             metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
@@ -187,8 +188,15 @@ def train_one_epoch(
 
     # Add training accuracies to PerforatedAI tracker
     if args.use_xla and running_total > 0:
+        train_loss = (running_loss_sum * (1.0 / running_total)).item()
+        train_ce = (running_ce_sum * (1.0 / running_total)).item()
+        train_kd = (running_kd_sum * (1.0 / running_total)).item()
         train_acc1 = (running_correct * (100.0 / running_total)).item()
         train_acc5 = train_acc1
+        print(
+            f"{header} Summary loss: {train_loss:.4f} ce: {train_ce:.4f} kd: {train_kd:.4f} "
+            f"Acc@1 {train_acc1:.3f} Acc@5 {train_acc5:.3f}"
+        )
     else:
         train_acc1 = metric_logger.acc1.global_avg
         train_acc5 = metric_logger.acc5.global_avg
@@ -212,6 +220,7 @@ def train_one_epoch_supervised(
     header = f"Teacher Epoch: [{epoch}]"
     running_correct = torch.zeros((), device=device) if args.use_xla else 0.0
     running_total = 0
+    running_loss_sum = torch.zeros((), device=device) if args.use_xla else 0.0
 
     for image, target in metric_logger.log_every(data_loader, args.print_freq, header):
         image, target = image.to(device), target.to(device)
@@ -250,24 +259,24 @@ def train_one_epoch_supervised(
         else:
             running_correct += float(correct1.item())
         running_total += batch_size
+        if args.use_xla:
+            running_loss_sum = running_loss_sum + loss.detach() * batch_size
 
-        should_log_metrics = (not args.use_xla) or (i % args.print_freq == 0)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
-        if should_log_metrics:
-            if args.use_xla:
-                acc1 = correct1.to(torch.float32) * (100.0 / batch_size)
-                acc5 = acc1
-            else:
-                acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
+        if not args.use_xla:
+            acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
             metric_logger.update(loss=loss.item())
             metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
             metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
 
     metric_logger.synchronize_between_processes()
     if args.use_xla and running_total > 0:
+        final_loss = (running_loss_sum * (1.0 / running_total)).item()
         final_acc1 = (running_correct * (100.0 / running_total)).item()
         final_acc5 = final_acc1
-        print(f"{header} Acc@1 {final_acc1:.3f} Acc@5 {final_acc5:.3f}")
+        print(
+            f"{header} Summary loss: {final_loss:.4f} Acc@1 {final_acc1:.3f} Acc@5 {final_acc5:.3f}"
+        )
         return
     print(
         f"{header} Acc@1 {metric_logger.acc1.global_avg:.3f} Acc@5 {metric_logger.acc5.global_avg:.3f}"
@@ -278,6 +287,9 @@ def evaluate_plain(model, criterion, data_loader, device, print_freq=100, log_su
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = f"EvalPlain: {log_suffix}"
+    running_correct = torch.zeros((), device=device) if is_xla_device(device) else 0.0
+    running_total = 0
+    running_loss_sum = torch.zeros((), device=device) if is_xla_device(device) else 0.0
 
     with torch.no_grad():
         for image, target in metric_logger.log_every(data_loader, print_freq, header):
@@ -286,13 +298,26 @@ def evaluate_plain(model, criterion, data_loader, device, print_freq=100, log_su
             output = model(image)
             loss = criterion(output, target)
 
-            acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
             batch_size = image.shape[0]
-            metric_logger.update(loss=loss.item())
-            metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
-            metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
+            if is_xla_device(device):
+                target_for_acc = target.argmax(dim=1) if target.ndim == 2 else target
+                pred = output.argmax(dim=1)
+                running_correct = running_correct + pred.eq(target_for_acc).sum()
+                running_total += batch_size
+                running_loss_sum = running_loss_sum + loss.detach() * batch_size
+            else:
+                acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
+                metric_logger.update(loss=loss.item())
+                metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
+                metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
 
     metric_logger.synchronize_between_processes()
+    if is_xla_device(device) and running_total > 0:
+        eval_loss = (running_loss_sum * (1.0 / running_total)).item()
+        eval_acc1 = (running_correct * (100.0 / running_total)).item()
+        eval_acc5 = eval_acc1
+        print(f"{header} Acc@1 {eval_acc1:.3f} Acc@5 {eval_acc5:.3f} loss {eval_loss:.4f}")
+        return eval_acc1
     print(
         f"{header} Acc@1 {metric_logger.acc1.global_avg:.3f} Acc@5 {metric_logger.acc5.global_avg:.3f}"
     )
@@ -393,6 +418,9 @@ def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix="
     header = f"Test: {log_suffix}"
 
     num_processed_samples = 0
+    running_correct = torch.zeros((), device=device) if is_xla_device(device) else 0.0
+    running_total = 0
+    running_loss_sum = torch.zeros((), device=device) if is_xla_device(device) else 0.0
 
     with torch.no_grad():
         for image, target in metric_logger.log_every(data_loader, print_freq, header):
@@ -401,13 +429,20 @@ def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix="
             output = model(image)
             loss = criterion(output, target)
 
-            acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
             # FIXME need to take into account that the datasets
             # could have been padded in distributed setup
             batch_size = image.shape[0]
-            metric_logger.update(loss=loss.item())
-            metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
-            metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
+            if is_xla_device(device):
+                target_for_acc = target.argmax(dim=1) if target.ndim == 2 else target
+                pred = output.argmax(dim=1)
+                running_correct = running_correct + pred.eq(target_for_acc).sum()
+                running_total += batch_size
+                running_loss_sum = running_loss_sum + loss.detach() * batch_size
+            else:
+                acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
+                metric_logger.update(loss=loss.item())
+                metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
+                metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
             num_processed_samples += batch_size
 
     # gather the stats from all processes
@@ -426,6 +461,20 @@ def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix="
         )
 
     metric_logger.synchronize_between_processes()
+
+    if is_xla_device(device) and running_total > 0:
+        val_loss = (running_loss_sum * (1.0 / running_total)).item()
+        val_acc1 = (running_correct * (100.0 / running_total)).item()
+        val_acc5 = val_acc1
+        print(f"{header} Acc@1 {val_acc1:.3f} Acc@5 {val_acc5:.3f} loss {val_loss:.4f}")
+
+        # Add validation score to PerforatedAI tracker and check for restructuring
+        GPA.pai_tracker.add_extra_score(val_acc5, "Val Acc 5")
+        model, restructured, trainingComplete = GPA.pai_tracker.add_validation_score(
+            val_acc1, model
+        )
+
+        return model, val_acc1, restructured, trainingComplete
 
     print(
         f"{header} Acc@1 {metric_logger.acc1.global_avg:.3f} Acc@5 {metric_logger.acc5.global_avg:.3f}"
@@ -446,6 +495,9 @@ def test(model, criterion, data_loader, device, print_freq=100, log_suffix=""):
     header = f"TestHoldout: {log_suffix}"
 
     num_processed_samples = 0
+    running_correct = torch.zeros((), device=device) if is_xla_device(device) else 0.0
+    running_total = 0
+    running_loss_sum = torch.zeros((), device=device) if is_xla_device(device) else 0.0
 
     with torch.no_grad():
         for image, target in metric_logger.log_every(data_loader, print_freq, header):
@@ -454,11 +506,18 @@ def test(model, criterion, data_loader, device, print_freq=100, log_suffix=""):
             output = model(image)
             loss = criterion(output, target)
 
-            acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
             batch_size = image.shape[0]
-            metric_logger.update(loss=loss.item())
-            metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
-            metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
+            if is_xla_device(device):
+                target_for_acc = target.argmax(dim=1) if target.ndim == 2 else target
+                pred = output.argmax(dim=1)
+                running_correct = running_correct + pred.eq(target_for_acc).sum()
+                running_total += batch_size
+                running_loss_sum = running_loss_sum + loss.detach() * batch_size
+            else:
+                acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
+                metric_logger.update(loss=loss.item())
+                metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
+                metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
             num_processed_samples += batch_size
 
     num_processed_samples = utils.reduce_across_processes(num_processed_samples)
@@ -475,6 +534,17 @@ def test(model, criterion, data_loader, device, print_freq=100, log_suffix=""):
         )
 
     metric_logger.synchronize_between_processes()
+
+    if is_xla_device(device) and running_total > 0:
+        test_loss = (running_loss_sum * (1.0 / running_total)).item()
+        test_acc1 = (running_correct * (100.0 / running_total)).item()
+        test_acc5 = test_acc1
+        print(f"{header} Acc@1 {test_acc1:.3f} Acc@5 {test_acc5:.3f} loss {test_loss:.4f}")
+
+        GPA.pai_tracker.add_extra_score(test_acc1, "Test Acc 1")
+        GPA.pai_tracker.add_extra_score(test_acc5, "Test Acc 5")
+
+        return test_acc1
 
     print(
         f"{header} Acc@1 {metric_logger.acc1.global_avg:.3f} Acc@5 {metric_logger.acc5.global_avg:.3f}"
