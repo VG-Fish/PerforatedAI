@@ -110,9 +110,12 @@ def train_one_epoch(
     running_ce_sum = torch.zeros((), device=device) if args.use_xla else 0.0
     running_kd_sum = torch.zeros((), device=device) if args.use_xla else 0.0
 
-    for i, (image, target) in enumerate(
-        metric_logger.log_every(data_loader, args.print_freq, header)
-    ):
+    if args.use_xla:
+        data_iter = enumerate(data_loader)
+    else:
+        data_iter = enumerate(metric_logger.log_every(data_loader, args.print_freq, header))
+
+    for i, (image, target) in data_iter:
         start_time = time.time()
         image, target = image.to(device), target.to(device)
 
@@ -177,19 +180,21 @@ def train_one_epoch(
             running_ce_sum = running_ce_sum + ce_loss.detach() * batch_size
             running_kd_sum = running_kd_sum + kd_loss.detach() * batch_size
 
-        metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         if args.use_xla:
-            # Keep meters non-empty for log_every string formatting without sync.
-            metric_logger.update(loss=0.0, ce=0.0, kd=0.0)
-            metric_logger.meters["acc1"].update(0.0, n=batch_size)
-            metric_logger.meters["acc5"].update(0.0, n=batch_size)
+            if i % args.print_freq == 0:
+                elapsed = time.time() - start_time
+                imgs = batch_size / elapsed if elapsed > 0 else 0.0
+                print(
+                    f"{header}  [{i}/{len(data_loader)}]  lr: {optimizer.param_groups[0]['lr']}  img/s: {imgs:.4f}"
+                )
         else:
+            metric_logger.update(lr=optimizer.param_groups[0]["lr"])
             acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
             metric_logger.update(loss=loss.item())
             metric_logger.update(ce=ce_loss.item(), kd=kd_loss.item())
             metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
             metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
-        metric_logger.meters["img/s"].update(batch_size / (time.time() - start_time))
+            metric_logger.meters["img/s"].update(batch_size / (time.time() - start_time))
 
     # Add training accuracies to PerforatedAI tracker
     if args.use_xla and running_total > 0:
@@ -227,7 +232,12 @@ def train_one_epoch_supervised(
     running_total = 0
     running_loss_sum = torch.zeros((), device=device) if args.use_xla else 0.0
 
-    for image, target in metric_logger.log_every(data_loader, args.print_freq, header):
+    if args.use_xla:
+        data_iter = enumerate(data_loader)
+    else:
+        data_iter = enumerate(metric_logger.log_every(data_loader, args.print_freq, header))
+
+    for i, (image, target) in data_iter:
         image, target = image.to(device), target.to(device)
 
         with maybe_autocast(device, scaler):
@@ -267,12 +277,11 @@ def train_one_epoch_supervised(
         if args.use_xla:
             running_loss_sum = running_loss_sum + loss.detach() * batch_size
 
-        metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         if args.use_xla:
-            metric_logger.update(loss=0.0)
-            metric_logger.meters["acc1"].update(0.0, n=batch_size)
-            metric_logger.meters["acc5"].update(0.0, n=batch_size)
+            if i % args.print_freq == 0:
+                print(f"{header}  [{i}/{len(data_loader)}]  lr: {optimizer.param_groups[0]['lr']}")
         else:
+            metric_logger.update(lr=optimizer.param_groups[0]["lr"])
             acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
             metric_logger.update(loss=loss.item())
             metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
@@ -300,8 +309,13 @@ def evaluate_plain(model, criterion, data_loader, device, print_freq=100, log_su
     running_total = 0
     running_loss_sum = torch.zeros((), device=device) if is_xla_device(device) else 0.0
 
+    if is_xla_device(device):
+        data_iter = enumerate(data_loader)
+    else:
+        data_iter = enumerate(metric_logger.log_every(data_loader, print_freq, header))
+
     with torch.no_grad():
-        for image, target in metric_logger.log_every(data_loader, print_freq, header):
+        for i, (image, target) in data_iter:
             image = image.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
             output = model(image)
@@ -314,9 +328,8 @@ def evaluate_plain(model, criterion, data_loader, device, print_freq=100, log_su
                 running_correct = running_correct + pred.eq(target_for_acc).sum()
                 running_total += batch_size
                 running_loss_sum = running_loss_sum + loss.detach() * batch_size
-                metric_logger.update(loss=0.0)
-                metric_logger.meters["acc1"].update(0.0, n=batch_size)
-                metric_logger.meters["acc5"].update(0.0, n=batch_size)
+                if i % print_freq == 0:
+                    print(f"{header}  [{i}/{len(data_loader)}]")
             else:
                 acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
                 metric_logger.update(loss=loss.item())
@@ -434,8 +447,13 @@ def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix="
     running_total = 0
     running_loss_sum = torch.zeros((), device=device) if is_xla_device(device) else 0.0
 
+    if is_xla_device(device):
+        data_iter = enumerate(data_loader)
+    else:
+        data_iter = enumerate(metric_logger.log_every(data_loader, print_freq, header))
+
     with torch.no_grad():
-        for image, target in metric_logger.log_every(data_loader, print_freq, header):
+        for i, (image, target) in data_iter:
             image = image.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
             output = model(image)
@@ -450,9 +468,8 @@ def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix="
                 running_correct = running_correct + pred.eq(target_for_acc).sum()
                 running_total += batch_size
                 running_loss_sum = running_loss_sum + loss.detach() * batch_size
-                metric_logger.update(loss=0.0)
-                metric_logger.meters["acc1"].update(0.0, n=batch_size)
-                metric_logger.meters["acc5"].update(0.0, n=batch_size)
+                if i % print_freq == 0:
+                    print(f"{header}  [{i}/{len(data_loader)}]")
             else:
                 acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
                 metric_logger.update(loss=loss.item())
@@ -514,8 +531,13 @@ def test(model, criterion, data_loader, device, print_freq=100, log_suffix=""):
     running_total = 0
     running_loss_sum = torch.zeros((), device=device) if is_xla_device(device) else 0.0
 
+    if is_xla_device(device):
+        data_iter = enumerate(data_loader)
+    else:
+        data_iter = enumerate(metric_logger.log_every(data_loader, print_freq, header))
+
     with torch.no_grad():
-        for image, target in metric_logger.log_every(data_loader, print_freq, header):
+        for i, (image, target) in data_iter:
             image = image.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
             output = model(image)
@@ -528,9 +550,8 @@ def test(model, criterion, data_loader, device, print_freq=100, log_suffix=""):
                 running_correct = running_correct + pred.eq(target_for_acc).sum()
                 running_total += batch_size
                 running_loss_sum = running_loss_sum + loss.detach() * batch_size
-                metric_logger.update(loss=0.0)
-                metric_logger.meters["acc1"].update(0.0, n=batch_size)
-                metric_logger.meters["acc5"].update(0.0, n=batch_size)
+                if i % print_freq == 0:
+                    print(f"{header}  [{i}/{len(data_loader)}]")
             else:
                 acc1, acc5 = compute_accuracy(output, target, topk=(1, 5))
                 metric_logger.update(loss=loss.item())
@@ -1237,6 +1258,27 @@ def main(args):
     if args.use_xla and args.distributed:
         raise RuntimeError("XLA/Trainium path currently supports single-process training only")
     print(f"Using device: {device}")
+    if args.use_xla:
+        try:
+            xla_kind = xm.xla_device_kind()
+        except Exception:
+            xla_kind = "unknown"
+        try:
+            xla_devices = xm.get_xla_supported_devices()
+        except Exception:
+            xla_devices = []
+        print(
+            "XLA diagnostics: "
+            f"kind={xla_kind}, num_devices={len(xla_devices)}, devices={xla_devices}"
+        )
+        print(
+            "XLA env: "
+            f"XLA_USE_BF16={os.environ.get('XLA_USE_BF16', '')}, "
+            f"XLA_DOWNCAST_BF16={os.environ.get('XLA_DOWNCAST_BF16', '')}, "
+            f"NEURON_RT_STOCHASTIC_ROUNDING_EN={os.environ.get('NEURON_RT_STOCHASTIC_ROUNDING_EN', '')}, "
+            f"NEURON_CC_FLAGS={os.environ.get('NEURON_CC_FLAGS', '')}, "
+            f"NEURON_COMPILE_CACHE_URL={os.environ.get('NEURON_COMPILE_CACHE_URL', '')}"
+        )
 
     if args.use_deterministic_algorithms:
         torch.backends.cudnn.benchmark = False
