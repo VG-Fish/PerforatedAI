@@ -36,6 +36,7 @@ from types import SimpleNamespace
 try:
     import torch_xla
     import torch_xla.core.xla_model as xm
+    import torch_xla.distributed.parallel_loader as pl
 
     HAS_XLA = True
 except ImportError:
@@ -48,6 +49,16 @@ KD_TEMPERATURE = 4.0
 
 def is_xla_device(device):
     return HAS_XLA and str(device).startswith("xla")
+
+
+def resolve_loader_dataset(data_loader):
+    dataset = getattr(data_loader, "dataset", None)
+    if dataset is not None:
+        return dataset
+    wrapped_loader = getattr(data_loader, "_loader", None)
+    if wrapped_loader is not None:
+        return getattr(wrapped_loader, "dataset", None)
+    return None
 
 
 def xla_sync_step():
@@ -479,14 +490,21 @@ def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix="
 
     # gather the stats from all processes
     num_processed_samples = utils.reduce_across_processes(num_processed_samples)
+    is_rank0 = (
+        (not torch.distributed.is_available())
+        or (not torch.distributed.is_initialized())
+        or torch.distributed.get_rank() == 0
+    )
+    eval_dataset = resolve_loader_dataset(data_loader)
     if (
-        hasattr(data_loader.dataset, "__len__")
-        and len(data_loader.dataset) != num_processed_samples
-        and torch.distributed.get_rank() == 0
+        eval_dataset is not None
+        and hasattr(eval_dataset, "__len__")
+        and len(eval_dataset) != num_processed_samples
+        and is_rank0
     ):
         # See FIXME above
         warnings.warn(
-            f"It looks like the dataset has {len(data_loader.dataset)} samples, but {num_processed_samples} "
+            f"It looks like the dataset has {len(eval_dataset)} samples, but {num_processed_samples} "
             "samples were used for the validation, which might bias the results. "
             "Try adjusting the batch size and / or the world size. "
             "Setting the world size to 1 is always a safe bet."
@@ -560,13 +578,20 @@ def test(model, criterion, data_loader, device, print_freq=100, log_suffix=""):
             num_processed_samples += batch_size
 
     num_processed_samples = utils.reduce_across_processes(num_processed_samples)
+    is_rank0 = (
+        (not torch.distributed.is_available())
+        or (not torch.distributed.is_initialized())
+        or torch.distributed.get_rank() == 0
+    )
+    test_dataset = resolve_loader_dataset(data_loader)
     if (
-        hasattr(data_loader.dataset, "__len__")
-        and len(data_loader.dataset) != num_processed_samples
-        and torch.distributed.get_rank() == 0
+        test_dataset is not None
+        and hasattr(test_dataset, "__len__")
+        and len(test_dataset) != num_processed_samples
+        and is_rank0
     ):
         warnings.warn(
-            f"It looks like the dataset has {len(data_loader.dataset)} samples, but {num_processed_samples} "
+            f"It looks like the dataset has {len(test_dataset)} samples, but {num_processed_samples} "
             "samples were used for testing, which might bias the results. "
             "Try adjusting the batch size and / or the world size. "
             "Setting the world size to 1 is always a safe bet."
@@ -1257,6 +1282,15 @@ def main(args):
     args.use_xla = is_xla_device(device)
     if args.use_xla and args.distributed:
         raise RuntimeError("XLA/Trainium path currently supports single-process training only")
+    if args.use_xla and args.xla_fast_mode:
+        if args.xla_bf16:
+            os.environ.setdefault("XLA_USE_BF16", "1")
+            os.environ.setdefault("NEURON_RT_STOCHASTIC_ROUNDING_EN", "1")
+        os.environ.setdefault("NEURON_NUM_RECENT_MODELS_TO_KEEP", "8")
+        os.environ.setdefault("NEURON_FUSE_SOFTMAX", "1")
+        if args.print_freq < 50:
+            args.print_freq = 50
+            print("XLA fast mode: raised print_freq to 50 to reduce host sync overhead")
     print(f"Using device: {device}")
     if args.use_xla:
         try:
@@ -1423,6 +1457,11 @@ def main(args):
         pin_memory=device.type == "cuda",
         drop_last=args.use_xla,
     )
+
+    if args.use_xla:
+        data_loader = pl.MpDeviceLoader(data_loader, device)
+        data_loader_val = pl.MpDeviceLoader(data_loader_val, device)
+        data_loader_test = pl.MpDeviceLoader(data_loader_test, device)
 
     if args.pre_train_teacher:
         pretrain_teacher(
@@ -1787,6 +1826,18 @@ def get_args_parser(add_help=True):
         action="store_true",
         default=False,
         help="disable XLA/Neuron even when torch_xla is available",
+    )
+    parser.add_argument(
+        "--xla-fast-mode",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="enable Trainium speed-oriented defaults (env vars + lower logging overhead)",
+    )
+    parser.add_argument(
+        "--xla-bf16",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="enable BF16 environment defaults when running on XLA",
     )
     parser.add_argument(
         "-b",
