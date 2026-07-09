@@ -155,11 +155,9 @@ class MyTrainer(Trainer):
         if prediction_loss_only:
             return (loss, None, None)
 
-        # Return loss, logits, and labels
-        # Make sure logits are on CPU for aggregation
-        # NEURON NOTE: .cpu() on XLA tensors forces a sync here — expected and
-        # fine during eval; just don't be surprised by a pause at epoch end.
-        return (loss, outputs.cpu(), labels.cpu())
+        # Return detached tensors; Trainer's evaluation loop handles gather/pad.
+        # Calling .cpu() here on XLA tensors can trigger Neuron tuple-placement errors.
+        return (loss, outputs.detach(), labels.detach())
 
 
 trainer = MyTrainer(
