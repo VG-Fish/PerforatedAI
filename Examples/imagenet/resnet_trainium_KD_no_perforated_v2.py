@@ -1197,6 +1197,11 @@ def main(args):
     args.use_xla = is_xla_device(device)
     if args.use_xla and args.distributed:
         raise RuntimeError("Neuron/Trainium path currently supports single-process training only")
+    if args.use_xla and args.workers > 0:
+        print(
+            f"Neuron mode: forcing workers=0 (was {args.workers}) to avoid DataLoader multiprocessing hangs"
+        )
+        args.workers = 0
     if args.use_xla and args.xla_fast_mode:
         if args.xla_bf16:
             os.environ.setdefault("XLA_USE_BF16", "1")
