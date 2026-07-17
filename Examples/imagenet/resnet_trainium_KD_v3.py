@@ -7,12 +7,11 @@ from torch import nn
 from torchvision import transforms
 
 try:
-    import torch_xla
-    import torch_xla.core.xla_model as xm
+    import torch_neuronx  # registers torch.device("neuron") backend
 
-    HAS_XLA = True
+    HAS_NEURON = True
 except ImportError:
-    HAS_XLA = False
+    HAS_NEURON = False
 
 from perforatedai import globals_perforatedai as GPA
 from perforatedai import utils_perforatedai as UPA
@@ -34,16 +33,17 @@ TRAINIUM_BF16 = True
 
 
 def is_neuron_device(device):
-    return str(device).startswith("xla")
+    device_str = str(device)
+    return device_str.startswith("neuron") or device_str.startswith("privateuseone")
 
 
 def sync_if_neuron(device):
-    if is_neuron_device(device):
-        torch_xla.sync()
+    if is_neuron_device(device) and hasattr(torch, "neuron"):
+        torch.neuron.synchronize()
 
 
 def get_device():
-    if HAS_XLA:
+    if HAS_NEURON:
         if TRAINIUM_FAST_MODE:
             if TRAINIUM_BF16:
                 os.environ.setdefault("XLA_USE_BF16", "1")
@@ -52,17 +52,18 @@ def get_device():
             os.environ.setdefault("NEURON_FUSE_SOFTMAX", "1")
 
         print(
-            "XLA env: "
+            "Neuron env: "
             f"XLA_USE_BF16={os.environ.get('XLA_USE_BF16', '')}, "
             f"NEURON_RT_STOCHASTIC_ROUNDING_EN={os.environ.get('NEURON_RT_STOCHASTIC_ROUNDING_EN', '')}, "
             f"NEURON_CC_FLAGS={os.environ.get('NEURON_CC_FLAGS', '')}, "
             f"NEURON_COMPILE_CACHE_URL={os.environ.get('NEURON_COMPILE_CACHE_URL', '')}"
         )
-        return xm.xla_device()
+        return torch.device("neuron")
 
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    return torch.device("cpu")
+    raise RuntimeError(
+        "Native Neuron is required for this Trainium script, but torch_neuronx is not available. "
+        "Activate the Trainium Neuron environment and run again."
+    )
 
 
 def evaluate(model, loader, device, criterion):
@@ -195,10 +196,7 @@ def main():
             logits = model(images)
             loss = criterion(logits, target)
             loss.backward()
-            if is_neuron_device(device):
-                xm.optimizer_step(optimizer, barrier=True)
-            else:
-                optimizer.step()
+            optimizer.step()
 
             batch_size = images.size(0)
             epoch_loss += float(loss.item()) * batch_size
