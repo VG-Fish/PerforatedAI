@@ -15,6 +15,7 @@ LR = 0.01
 MOMENTUM = 0.9
 WEIGHT_DECAY = 1e-3
 NUM_WORKERS = 8
+PRINT_FREQ = 50
 
 TRAINIUM_FAST_MODE = True
 TRAINIUM_BF16 = True
@@ -153,8 +154,10 @@ def main():
         epoch_correct = 0
         epoch_total = 0
         t0 = time.time()
+        header = f"Epoch [{epoch + 1}/{EPOCHS}]"
 
-        for images, target in train_loader:
+        for i, (images, target) in enumerate(train_loader):
+            step_start = time.time()
             images = images.to(device)
             target = target.to(device)
 
@@ -168,6 +171,14 @@ def main():
             epoch_loss += float(loss.item()) * batch_size
             epoch_correct += int(logits.argmax(dim=1).eq(target).sum().item())
             epoch_total += batch_size
+
+            if i % PRINT_FREQ == 0:
+                dt = time.time() - step_start
+                imgs_per_s = batch_size / dt if dt > 0 else 0.0
+                print(
+                    f"{header} [{i}/{len(train_loader)}] "
+                    f"lr: {optimizer.param_groups[0]['lr']:.6f} img/s: {imgs_per_s:.2f}"
+                )
 
         sync_if_neuron(device)
         train_loss = epoch_loss / max(1, epoch_total)
