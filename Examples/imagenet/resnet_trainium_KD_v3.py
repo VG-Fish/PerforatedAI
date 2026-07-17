@@ -6,6 +6,14 @@ import torchvision
 from torch import nn
 from torchvision import transforms
 
+try:
+    import torch_xla
+    import torch_xla.core.xla_model as xm
+
+    HAS_XLA = True
+except ImportError:
+    HAS_XLA = False
+
 from perforatedai import globals_perforatedai as GPA
 from perforatedai import utils_perforatedai as UPA
 import resnet_double as custom_resnet
@@ -26,18 +34,16 @@ TRAINIUM_BF16 = True
 
 
 def is_neuron_device(device):
-    return str(device).startswith("neuron") or str(device).startswith("privateuseone")
+    return str(device).startswith("xla")
 
 
 def sync_if_neuron(device):
-    if is_neuron_device(device) and hasattr(torch, "neuron"):
-        torch.neuron.synchronize()
+    if is_neuron_device(device):
+        torch_xla.sync()
 
 
 def get_device():
-    try:
-        import torch_neuronx  # noqa: F401
-
+    if HAS_XLA:
         if TRAINIUM_FAST_MODE:
             if TRAINIUM_BF16:
                 os.environ.setdefault("XLA_USE_BF16", "1")
@@ -46,15 +52,13 @@ def get_device():
             os.environ.setdefault("NEURON_FUSE_SOFTMAX", "1")
 
         print(
-            "Neuron env: "
+            "XLA env: "
             f"XLA_USE_BF16={os.environ.get('XLA_USE_BF16', '')}, "
             f"NEURON_RT_STOCHASTIC_ROUNDING_EN={os.environ.get('NEURON_RT_STOCHASTIC_ROUNDING_EN', '')}, "
             f"NEURON_CC_FLAGS={os.environ.get('NEURON_CC_FLAGS', '')}, "
             f"NEURON_COMPILE_CACHE_URL={os.environ.get('NEURON_COMPILE_CACHE_URL', '')}"
         )
-        return torch.device("neuron")
-    except Exception:
-        pass
+        return xm.xla_device()
 
     if torch.cuda.is_available():
         return torch.device("cuda")
@@ -191,7 +195,10 @@ def main():
             logits = model(images)
             loss = criterion(logits, target)
             loss.backward()
-            optimizer.step()
+            if is_neuron_device(device):
+                xm.optimizer_step(optimizer, barrier=True)
+            else:
+                optimizer.step()
 
             batch_size = images.size(0)
             epoch_loss += float(loss.item()) * batch_size

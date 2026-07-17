@@ -26,9 +26,10 @@ from transforms import get_mixup_cutmix
 import wandb
 from types import SimpleNamespace
 
-# NEURON EDIT: native PyTorch Neuron device support (v2 interface).
+# NEURON EDIT: XLA device support for Trainium.
 try:
-    import torch_neuronx  # registers torch.device("neuron") backend
+    import torch_xla
+    import torch_xla.core.xla_model as xm
 
     HAS_XLA = True
 except ImportError:
@@ -44,12 +45,7 @@ def count_model_params(model):
 
 
 def is_xla_device(device):
-    device_str = str(device)
-    return (
-        device_str.startswith("xla")
-        or device_str.startswith("neuron")
-        or device_str.startswith("privateuseone")
-    )
+    return str(device).startswith("xla")
 
 
 def resolve_loader_dataset(data_loader):
@@ -63,8 +59,8 @@ def resolve_loader_dataset(data_loader):
 
 
 def xla_sync_step():
-    if hasattr(torch, "neuron"):
-        torch.neuron.synchronize()
+    if HAS_XLA:
+        torch_xla.sync()
 
 
 def maybe_autocast(device, scaler):
@@ -1183,10 +1179,10 @@ def main(args):
     utils.init_distributed_mode(args)
     print(args)
 
-    # NEURON EDIT: prefer native Neuron device when available unless explicitly disabled.
+    # NEURON EDIT: prefer XLA device when available unless explicitly disabled.
     use_xla = HAS_XLA and not args.no_xla
     if use_xla:
-        device = torch.device("neuron")
+        device = xm.xla_device()
     else:
         requested_device = torch.device(args.device)
         if requested_device.type == "cuda" and not torch.cuda.is_available():
@@ -1196,7 +1192,7 @@ def main(args):
         device = requested_device
     args.use_xla = is_xla_device(device)
     if args.use_xla and args.distributed:
-        raise RuntimeError("Neuron/Trainium path currently supports single-process training only")
+        raise RuntimeError("XLA/Trainium path currently supports single-process training only")
     if args.use_xla and args.workers > 0:
         print(
             f"Neuron mode: forcing workers=0 (was {args.workers}) to avoid DataLoader multiprocessing hangs"
@@ -1214,7 +1210,7 @@ def main(args):
     print(f"Using device: {device}")
     if args.use_xla:
         print(
-            "Neuron env: "
+            "XLA env: "
             f"XLA_USE_BF16={os.environ.get('XLA_USE_BF16', '')}, "
             f"XLA_DOWNCAST_BF16={os.environ.get('XLA_DOWNCAST_BF16', '')}, "
             f"NEURON_RT_STOCHASTIC_ROUNDING_EN={os.environ.get('NEURON_RT_STOCHASTIC_ROUNDING_EN', '')}, "
@@ -1615,7 +1611,7 @@ def get_args_parser(add_help=True):
         "--no-xla",
         action="store_true",
         default=False,
-        help="disable Neuron/XLA even when torch_neuronx is available",
+        help="disable XLA/Neuron even when torch_xla is available",
     )
     parser.add_argument(
         "--xla-fast-mode",
