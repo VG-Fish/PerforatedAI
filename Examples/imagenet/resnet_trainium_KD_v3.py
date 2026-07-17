@@ -1,0 +1,213 @@
+import os
+import time
+
+import torch
+import torchvision
+from torch import nn
+from torchvision import transforms
+
+from perforatedai import globals_perforatedai as GPA
+from perforatedai import utils_perforatedai as UPA
+import resnet_double as custom_resnet
+
+
+# Minimal fixed config (no CLI args)
+DATA_ROOT = "./Datasets"
+BATCH_SIZE = 32
+EPOCHS = 5
+LR = 0.01
+MOMENTUM = 0.9
+WEIGHT_DECAY = 1e-3
+NUM_WORKERS = 8
+
+TRAINIUM_FAST_MODE = True
+TRAINIUM_BF16 = True
+
+
+def is_neuron_device(device):
+    return str(device).startswith("neuron") or str(device).startswith("privateuseone")
+
+
+def sync_if_neuron(device):
+    if is_neuron_device(device) and hasattr(torch, "neuron"):
+        torch.neuron.synchronize()
+
+
+def get_device():
+    try:
+        import torch_neuronx  # noqa: F401
+
+        if TRAINIUM_FAST_MODE:
+            if TRAINIUM_BF16:
+                os.environ.setdefault("XLA_USE_BF16", "1")
+                os.environ.setdefault("NEURON_RT_STOCHASTIC_ROUNDING_EN", "1")
+            os.environ.setdefault("NEURON_NUM_RECENT_MODELS_TO_KEEP", "8")
+            os.environ.setdefault("NEURON_FUSE_SOFTMAX", "1")
+
+        print(
+            "Neuron env: "
+            f"XLA_USE_BF16={os.environ.get('XLA_USE_BF16', '')}, "
+            f"NEURON_RT_STOCHASTIC_ROUNDING_EN={os.environ.get('NEURON_RT_STOCHASTIC_ROUNDING_EN', '')}, "
+            f"NEURON_CC_FLAGS={os.environ.get('NEURON_CC_FLAGS', '')}, "
+            f"NEURON_COMPILE_CACHE_URL={os.environ.get('NEURON_COMPILE_CACHE_URL', '')}"
+        )
+        return torch.device("neuron")
+    except Exception:
+        pass
+
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+def evaluate(model, loader, device, criterion):
+    model.eval()
+    loss_sum = 0.0
+    correct = 0
+    total = 0
+
+    with torch.no_grad():
+        for images, target in loader:
+            images = images.to(device)
+            target = target.to(device)
+            logits = model(images)
+            loss = criterion(logits, target)
+
+            batch_size = images.size(0)
+            loss_sum += float(loss.item()) * batch_size
+            correct += int(logits.argmax(dim=1).eq(target).sum().item())
+            total += batch_size
+
+    sync_if_neuron(device)
+    avg_loss = loss_sum / max(1, total)
+    acc1 = 100.0 * correct / max(1, total)
+    return avg_loss, acc1
+
+
+def main():
+    device = get_device()
+    print(f"Using device: {device}")
+
+    workers = 0 if is_neuron_device(device) else NUM_WORKERS
+    if is_neuron_device(device) and NUM_WORKERS > 0:
+        print(f"Neuron mode: forcing workers=0 (was {NUM_WORKERS})")
+
+    train_tf = transforms.Compose(
+        [
+            transforms.RandomResizedCrop(224),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+        ]
+    )
+    test_tf = transforms.Compose(
+        [
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+        ]
+    )
+
+    print("Loading Food-101...")
+    train_ds = torchvision.datasets.Food101(
+        root=DATA_ROOT,
+        split="train",
+        transform=train_tf,
+        download=True,
+    )
+    test_ds = torchvision.datasets.Food101(
+        root=DATA_ROOT,
+        split="test",
+        transform=test_tf,
+        download=True,
+    )
+
+    train_loader = torch.utils.data.DataLoader(
+        train_ds,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=workers,
+        drop_last=is_neuron_device(device),
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_ds,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=workers,
+        drop_last=is_neuron_device(device),
+    )
+
+    # Minimal model with PerforatedAI (only intended difference vs _no_perforated_v3).
+    model = torchvision.models.resnet18(weights=None)
+    model.fc = nn.Linear(model.fc.in_features, 101)
+
+    GPA.pc.set_switch_mode(GPA.pc.DOING_HISTORY)
+    GPA.pc.set_weight_decay_accepted(True)
+    GPA.pc.set_n_epochs_to_switch(40)
+    GPA.pc.set_p_epochs_to_switch(40)
+    GPA.pc.set_cap_at_n(True)
+    GPA.pc.set_initial_history_after_switches(2)
+    GPA.pc.set_test_saves(True)
+    GPA.pc.set_testing_dendrite_capacity(False)
+    if hasattr(GPA.pc, "set_unwrapped_modules_confirmed"):
+        GPA.pc.set_unwrapped_modules_confirmed(True)
+    GPA.pc.append_module_names_to_perforate(["BasicBlock", "Bottleneck"])
+    GPA.pc.set_verbose(False)
+    GPA.pc.set_improvement_threshold([0.001, 0.0001, 0])
+    GPA.pc.set_candidate_weight_initialization_multiplier(0.1)
+    GPA.pc.set_pai_forward_function(torch.relu)
+    GPA.pc.set_max_dendrites(5)
+    GPA.pc.set_perforated_backpropagation(False)
+
+    model = custom_resnet.ResNetPAI(model)
+    model.to(device)
+    model = UPA.perforate_model(model, save_name="resnet18_food101_v3")
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.SGD(
+        model.parameters(),
+        lr=LR,
+        momentum=MOMENTUM,
+        weight_decay=WEIGHT_DECAY,
+    )
+
+    print("Start training")
+    for epoch in range(EPOCHS):
+        model.train()
+        epoch_loss = 0.0
+        epoch_correct = 0
+        epoch_total = 0
+        t0 = time.time()
+
+        for images, target in train_loader:
+            images = images.to(device)
+            target = target.to(device)
+
+            optimizer.zero_grad()
+            logits = model(images)
+            loss = criterion(logits, target)
+            loss.backward()
+            optimizer.step()
+
+            batch_size = images.size(0)
+            epoch_loss += float(loss.item()) * batch_size
+            epoch_correct += int(logits.argmax(dim=1).eq(target).sum().item())
+            epoch_total += batch_size
+
+        sync_if_neuron(device)
+        train_loss = epoch_loss / max(1, epoch_total)
+        train_acc1 = 100.0 * epoch_correct / max(1, epoch_total)
+        test_loss, test_acc1 = evaluate(model, test_loader, device, criterion)
+        dt = time.time() - t0
+
+        print(
+            f"Epoch {epoch + 1}/{EPOCHS} | "
+            f"train_loss={train_loss:.4f} train_acc1={train_acc1:.2f} | "
+            f"test_loss={test_loss:.4f} test_acc1={test_acc1:.2f} | "
+            f"time={dt:.1f}s"
+        )
+
+
+if __name__ == "__main__":
+    main()
