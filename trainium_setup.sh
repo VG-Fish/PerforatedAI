@@ -99,12 +99,20 @@ log "AWS credentials OK: account $(aws sts get-caller-identity --query Account -
 step "preflight: disk space"
 AVAIL=$(free_gb_root)
 log "Free space on /: ${AVAIL}GB"
-if [ "$AVAIL" -lt "$HARD_MIN_FREE_GB" ]; then
+# The hard minimum only matters if the big downloads (image pull + workspace
+# extraction) haven't happened yet. On reruns, don't block.
+HEAVY_WORK_DONE=false
+if docker image inspect "$COMMITTED_IMAGE_NAME" >/dev/null 2>&1; then
+  HEAVY_WORK_DONE=true
+elif docker image inspect "$IMAGE_REF" >/dev/null 2>&1 && [ -d "$HOME/workspace/runtime_artifacts" ]; then
+  HEAVY_WORK_DONE=true
+fi
+if [ "$HEAVY_WORK_DONE" = false ] && [ "$AVAIL" -lt "$HARD_MIN_FREE_GB" ]; then
   STEP_HINT="grow the EBS volume (Console -> Volumes -> Modify), then: sudo growpart /dev/nvme0n1 1 && sudo resize2fs /dev/nvme0n1p1"
-  log "BLOCKED: below ${HARD_MIN_FREE_GB}GB free. This killed a previous run."
+  log "BLOCKED: below ${HARD_MIN_FREE_GB}GB free and image/artifacts not yet downloaded. This killed a previous run."
   false
 elif [ "$AVAIL" -lt "$WARN_FREE_GB" ]; then
-  log "WARNING: ${AVAIL}GB free is OK for setup + Food-101, but ImageNet-scale work + NEFF caches will need more. Consider growing the volume."
+  log "WARNING: only ${AVAIL}GB free. Setup can proceed, but dataset downloads and NEFF caches may fill this. Strongly consider growing the volume."
 fi
 
 step "preflight: docker group membership"
