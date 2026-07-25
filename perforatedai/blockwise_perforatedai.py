@@ -57,10 +57,9 @@ class PAILayer(nn.Module):
             should still be added so that dendrites_to_top is included at the correct index
             """
             self.skip_weights = nn.ParameterList()
-        if dendrites_to_top:
-            self.skip_weights.append(dendrites_to_top[len(dendrites_to_top) - 1])
-        else:
+        if not dendrites_to_top:
             self.skip_weights = nn.ParameterList()
+        self.dendrites_to_top = dendrites_to_top if dendrites_to_top else nn.ModuleList()
         
         # Delete skip_weights if it's empty (only 1 layer, no skip connections)
         if len(self.skip_weights) == 0:

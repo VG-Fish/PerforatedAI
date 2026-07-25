@@ -377,8 +377,8 @@ class PAINeuronModule(nn.Module):
         )
         self.dendrite_modules_added = 0
 
-        # Values for dendrite to neuron weights
-        self.dendrites_to_top = nn.ParameterList()
+        # Values for dendrite to neuron weights — one Linear per accepted dendrite
+        self.dendrites_to_top = nn.ModuleList()
         self.register_parameter("newest_dendrite_to_top", None)
         self.candidate_to_top = nn.ParameterList()
         self.register_parameter("current_candidate_to_top", None)
@@ -515,7 +515,7 @@ class PAINeuronModule(nn.Module):
 
         """
         self.dendrite_modules_added = 0
-        self.dendrites_to_top = nn.ParameterList()
+        self.dendrites_to_top = nn.ModuleList()
         self.candidate_to_top = nn.ParameterList()
         self.dendrite_module = PAIDendriteModule(
             self.main_module,
@@ -609,69 +609,14 @@ class PAINeuronModule(nn.Module):
         if mode == "n":
             self.dendrite_module.set_mode(mode)
             # Initialize the dendrite to neuron connections
-            if self.dendrite_modules_added > 0:
-                if self.module_config.get_learn_dendrites_live():
-                    values = torch.cat(
-                        (
-                            self.dendrites_to_top[self.dendrite_modules_added - 1],
-                            nn.Parameter(
-                                self.candidate_to_top.detach()
-                                .clone()
-                                .to(dtype=self.module_config.get_d_type())
-                            ),
-                        ),
-                        0,
-                    )
-                else:
-                    values = torch.cat(
-                        (
-                            self.dendrites_to_top[self.dendrite_modules_added - 1],
-                            nn.Parameter(
-                                torch.zeros(
-                                    (1, self.out_channels),
-                                    device=self.dendrites_to_top[
-                                        self.dendrite_modules_added - 1
-                                    ].device,
-                                    dtype=self.module_config.get_d_type(),
-                                )
-                            ),
-                        ),
-                        0,
-                    )
-                self.dendrites_to_top.append(
-                    nn.Parameter(
-                        values.detach()
-                        .clone()
-                        .to(
-                            device=self.module_config.get_device(),
-                            dtype=self.module_config.get_d_type(),
-                        ),
-                        requires_grad=True,
-                    )
-                )
-            else:
-                if self.module_config.get_learn_dendrites_live():
-                    self.dendrites_to_top.append(
-                        nn.Parameter(
-                            self.candidate_to_top.detach()
-                            .clone()
-                            .to(dtype=self.module_config.get_d_type()),
-                            requires_grad=True,
-                        )
-                    )
-                else:
-                    self.dendrites_to_top.append(
-                        nn.Parameter(
-                            torch.zeros(
-                                (1, self.out_channels),
-                                device=self.module_config.get_device(),
-                                dtype=self.module_config.get_d_type(),
-                            )
-                            .detach()
-                            .clone(),
-                            requires_grad=True,
-                        )
-                    )
+            C = self.out_channels
+            linear = nn.Linear(C, C, bias=False).to(
+                device=self.module_config.get_device(),
+                dtype=self.module_config.get_d_type(),
+            )
+            with torch.no_grad():
+                nn.init.zeros_(linear.weight)
+            self.dendrites_to_top.append(linear)
             self.dendrite_modules_added += 1
             if self.module_config.get_perforated_backpropagation():
                 MPB.set_module_n_pb(self)
@@ -784,19 +729,10 @@ class PAINeuronModule(nn.Module):
         ) = self.dendrite_module(*args, **kwargs)
         # If there are dendrites add all of their outputs to the neurons output
         if self.dendrite_modules_added > 0:
+            node_idx = self.this_node_index.item()
             for i in range(0, self.dendrite_modules_added):
-                to_top = self.dendrites_to_top[self.dendrite_modules_added - 1][i, :]
-                for dim in range(len(dendrite_outs[i].shape)):
-                    if dim == self.this_node_index:
-                        continue
-                    to_top = to_top.unsqueeze(dim)
-                if self.module_config.get_confirm_correct_sizes():
-                    to_top = to_top.expand(
-                        list(dendrite_outs[i].size())[0 : self.this_node_index]
-                        + [self.out_channels]
-                        + list(dendrite_outs[i].size())[self.this_node_index + 1 :]
-                    )
-                out = out + (dendrite_outs[i].to(out.device) * to_top.to(out.device))
+                d = dendrite_outs[i].to(out.device).movedim(node_idx, -1)
+                out = out + self.dendrites_to_top[i](d).movedim(-1, node_idx)
 
         # If learning live, add the candidate's output to the neuron's output via the live weight
         if self.module_config.get_perforated_backpropagation():

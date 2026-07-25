@@ -31,6 +31,7 @@ class PAIModulePyThread(nn.Module):
         elif hasattr(original_module, 'skip_weights') and len(original_module.skip_weights) == 1:
             # Only one element, don't create skip_weights
             pass
+        self.dendrites_to_top = original_module.dendrites_to_top
         self.register_buffer("node_index", original_module.node_index.clone().detach())
         self.register_buffer("num_cycles", original_module.num_cycles)
         self.register_buffer("view_tuple", original_module.view_tuple)
@@ -141,6 +142,13 @@ class PAIModulePyThread(nn.Module):
                 if out_index < len(self.layer_array) - 1:
                     current_out = GPA.pc.get_pai_forward_function()(current_out)
             dendrite_outs[out_index] = current_out
+        # Add all dendrite outputs to the neuron output via their learned linear projections
+        n_dendrites = len(self.layer_array) - 1
+        if hasattr(self, 'dendrites_to_top') and len(self.dendrites_to_top) > 0:
+            node_idx = self.view_tuple.tolist().index(-1)
+            for i in range(n_dendrites):
+                d = dendrite_outs[i].to(current_out.device).movedim(node_idx, -1)
+                current_out = current_out + self.dendrites_to_top[i](d).movedim(-1, node_idx)
         if not self.processor_array[-1] is None:
             current_out = self.processor_array[-1].post(current_out)
         return current_out
