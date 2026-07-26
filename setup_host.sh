@@ -27,8 +27,8 @@ PAI_REPO_URL="https://github.com/PerforatedAI/PerforatedAI.git"
 HOST_CODE_DIR="$HOME/PerforatedAI"
 HOST_DATA_DIR="$HOME/Datasets"
 
-HARD_MIN_FREE_GB=25   # refuse below this
-WARN_FREE_GB=60       # warn below this (ImageNet-scale work will need more)
+HARD_MIN_FREE_GB=80   # refuse below this — the DLC image pull+extract needs this much
+WARN_FREE_GB=120      # warn below this (datasets + NEFF caches + committed image on top)
 
 LOG_DIR="$HOME/trainium_logs"
 mkdir -p "$LOG_DIR"
@@ -142,23 +142,32 @@ else
     docker pull "$IMAGE_REF" 2>&1 | tee -a "$LOG_FILE"
   fi
 
-  step "extract runtime artifacts from image"
-  if [ -d "$HOME/workspace/runtime_artifacts" ]; then
-    log "\$HOME/workspace already extracted, skipping"
+  # The host-side driver install (extract /workspace debs + dpkg -i) is only
+  # needed when the instance has NO working Neuron driver. On a Neuron DLAMI the
+  # driver is preinstalled and neuron-ls works — skip all of it in that case.
+  # (This image also has no /workspace at its root, so extraction would fail.)
+  if neuron-ls >/dev/null 2>&1; then
+    log "Host Neuron driver already active (neuron-ls works) — skipping artifact extraction + driver-deb install."
+    docker rm -f tmp >/dev/null 2>&1 || true   # clean up any leftover from a prior failed run
   else
-    cd "$HOME"
-    docker rm -f tmp >/dev/null 2>&1 || true
-    docker create --name tmp "$IMAGE_REF" >>"$LOG_FILE" 2>&1
-    docker cp tmp:/workspace . 2>&1 | tee -a "$LOG_FILE"
-    docker rm tmp >>"$LOG_FILE" 2>&1
+    step "extract runtime artifacts from image" "this image may not ship /workspace at root; if extraction fails, use a Neuron DLAMI where the driver is preinstalled and neuron-ls already works"
+    if [ -d "$HOME/workspace/runtime_artifacts" ]; then
+      log "\$HOME/workspace already extracted, skipping"
+    else
+      cd "$HOME"
+      docker rm -f tmp >/dev/null 2>&1 || true
+      docker create --name tmp "$IMAGE_REF" >>"$LOG_FILE" 2>&1
+      docker cp tmp:/workspace . 2>&1 | tee -a "$LOG_FILE"
+      docker rm tmp >>"$LOG_FILE" 2>&1
+    fi
+
+    step "install build prerequisites (dkms, build-essential)"
+    sudo apt-get update >>"$LOG_FILE" 2>&1
+    sudo apt-get install -y dkms build-essential >>"$LOG_FILE" 2>&1
+
+    step "install Neuron runtime debs from DLC artifacts" "a version conflict here may mean held packages: try 'sudo apt-mark unhold <pkg>' then re-run"
+    sudo dpkg -i "$HOME"/workspace/runtime_artifacts/*.deb 2>&1 | tee -a "$LOG_FILE"
   fi
-
-  step "install build prerequisites (dkms, build-essential)"
-  sudo apt-get update >>"$LOG_FILE" 2>&1
-  sudo apt-get install -y dkms build-essential >>"$LOG_FILE" 2>&1
-
-  step "install Neuron runtime debs from DLC artifacts" "a version conflict here may mean held packages: try 'sudo apt-mark unhold <pkg>' then re-run"
-  sudo dpkg -i "$HOME"/workspace/runtime_artifacts/*.deb 2>&1 | tee -a "$LOG_FILE"
 fi
 
 step "verify NeuronCores visible" "if neuron-ls fails after driver install, reboot the instance and re-run this script"
