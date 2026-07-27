@@ -288,15 +288,13 @@ def main():
     else:
         raise ValueError(f"Unsupported model: {args.model_name}")
 
-    # Move model to device (Neuron if available, otherwise fallback to CUDA/CPU)
+    # Move model to device (CPU/GPU only; Neuron device placement is handled by the Trainer)
     if NEURON_AVAILABLE:
-        device = torch.device("xla")
-        print(f"Using Neuron device: {device}")
+        print("Using Neuron device: xla (device placement handled by Trainer)")
     else:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"Using device: {device}")
-    
-    model = model.to(device)
+        model = model.to(device)
 
     # Print parameter counts.
     count_model_parameters(model)
