@@ -83,8 +83,7 @@ def str2bool(v):
 
 # Import torch_neuronx to register neuron device and enable XLA
 try:
-    import torch_neuronx  # noqa: F401
-    import torch_xla.core.xla_model as xm
+    import torch_neuronx
     NEURON_AVAILABLE = True
 except ImportError:
     NEURON_AVAILABLE = False
@@ -317,7 +316,7 @@ def main():
     parser.add_argument(
         "--model_name",
         type=str,
-        default="prajjwal1/bert-tiny",
+        default="google/bert_uncased_L-2_H-128_A-2",
         help="Name or path of the model (e.g., roberta-base or bert-base-uncased)",
     )
     # Dataset selection: imdb or snli
@@ -581,15 +580,13 @@ def main():
     else:
         raise ValueError(f"Unsupported model: {args.model_name}")
 
-    # Move model to device (Neuron if available, otherwise fallback to CUDA/CPU)
+    # Move model to device (CPU/GPU only; Neuron device placement is handled by the Trainer)
     if NEURON_AVAILABLE:
-        device = xm.xla_device()
-        print(f"Using Neuron device: {device}")
+        print("Using Neuron device: xla (device placement handled by Trainer)")
     else:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"Using device: {device}")
-    
-    model = model.to(device)
+        model = model.to(device)
 
     # Print parameter counts.
     count_model_parameters(model)
