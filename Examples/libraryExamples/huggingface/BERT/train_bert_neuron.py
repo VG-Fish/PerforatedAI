@@ -59,7 +59,7 @@ def str2bool(v):
 
 # Import torch_neuronx to register neuron device and enable XLA
 try:
-    import torch_neuronx  # noqa: F401
+    import torch_neuronx
     NEURON_AVAILABLE = True
 except ImportError:
     NEURON_AVAILABLE = False
@@ -290,7 +290,7 @@ def main():
 
     # Move model to device (Neuron if available, otherwise fallback to CUDA/CPU)
     if NEURON_AVAILABLE:
-        device = torch.device("xla")
+        device = torch_neuronx.xla_device()
         print(f"Using Neuron device: {device}")
     else:
         device = "cuda" if torch.cuda.is_available() else "cpu"
