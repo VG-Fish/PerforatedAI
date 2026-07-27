@@ -68,6 +68,29 @@ neuron-ls 2>&1 | tee -a "$LOG_FILE"
 step "apt update"
 apt update >>"$LOG_FILE" 2>&1 || log "apt update had warnings (legacy key warnings are known and harmless)"
 
+step "ensure Python lzma support (_lzma)" "if the .so copy imports but fails to link, compile _lzma from CPython source (liblzma-dev is installed by this step)"
+# This DLC's Python is compiled from source WITHOUT xz/lzma, so 'import lzma'
+# fails and cascades into a transformers Trainer import error. Fix by installing
+# liblzma runtime + borrowing the distro's ABI-compatible _lzma extension.
+if python3 -c "import lzma" 2>/dev/null; then
+  log "lzma already works, skipping"
+else
+  log "_lzma missing — installing liblzma-dev and borrowing the distro _lzma extension"
+  apt-get install -y liblzma-dev >>"$LOG_FILE" 2>&1
+  SRC=$(find /usr/lib -name '_lzma.cpython-312*.so' 2>/dev/null | head -1)
+  if [ -z "$SRC" ]; then
+    apt-get install -y python3.12 >>"$LOG_FILE" 2>&1
+    SRC=$(find /usr/lib -name '_lzma.cpython-312*.so' 2>/dev/null | head -1)
+  fi
+  if [ -z "$SRC" ]; then
+    log "Could not locate a distro _lzma.cpython-312*.so to copy"
+    false
+  fi
+  log "Copying $SRC into /usr/local/lib/python3.12/lib-dynload/"
+  cp "$SRC" /usr/local/lib/python3.12/lib-dynload/
+  python3 -c "import lzma; print('lzma OK')" 2>&1 | tee -a "$LOG_FILE"
+fi
+
 step "pip install transformers"
 if python3 -c "import transformers" 2>/dev/null; then
   log "transformers already installed: $(python3 -c 'import transformers; print(transformers.__version__)')"
