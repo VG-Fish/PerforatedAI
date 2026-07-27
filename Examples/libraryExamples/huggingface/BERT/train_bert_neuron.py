@@ -290,7 +290,7 @@ def main():
 
     # Move model to device (Neuron if available, otherwise fallback to CUDA/CPU)
     if NEURON_AVAILABLE:
-        device = torch_neuronx.xla_device()
+        device = torch.device("xla")
         print(f"Using Neuron device: {device}")
     else:
         device = "cuda" if torch.cuda.is_available() else "cpu"
