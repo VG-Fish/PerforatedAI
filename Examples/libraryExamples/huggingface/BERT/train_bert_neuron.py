@@ -334,7 +334,7 @@ def main():
         save_total_limit=args.save_total_limit,
         save_strategy=args.save_strategy,
         save_steps=args.save_steps,
-        evaluation_strategy=args.evaluation_strategy,
+        eval_strategy=args.evaluation_strategy,
         eval_steps=args.eval_steps,
         learning_rate=args.lr,
         seed=args.seed,
