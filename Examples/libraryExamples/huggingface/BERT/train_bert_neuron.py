@@ -102,7 +102,7 @@ def load_imdb_dataset(tokenizer, max_len, seed=42, reduce_lines=False, cache_dir
     os.makedirs(cache_dir, exist_ok=True)
     
     # Download the IMDB dataset
-    dataset = load_dataset("imdb", cache_dir=cache_dir)
+    dataset = load_dataset("stanfordnlp/imdb", cache_dir=cache_dir)
     
     # Function to create stratified split
     def stratified_split(dataset, test_size=0.1, seed=42):
@@ -212,7 +212,7 @@ def resize_model_hidden_size(config, width_factor):
 def main():
     parser = argparse.ArgumentParser(description="Train a baseline Transformer model on AWS Trainium (without PAI integration).")
     # Model and tokenizer settings
-    parser.add_argument("--model_name", type=str, default="prajjwal1/bert-tiny", help="Model name (e.g., roberta-base or bert-base-uncased)")
+    parser.add_argument("--model_name", type=str, default="google/bert_uncased_L-2_H-128_A-2", help="Model name (e.g., roberta-base or bert-base-uncased)")
     # Dataset selection: imdb or snli
     parser.add_argument("--dataset", type=str, choices=["imdb", "snli"], default="imdb", help="Dataset type: imdb or snli")
     # DSN flag: if enabled, set number of encoder layers to 0.
