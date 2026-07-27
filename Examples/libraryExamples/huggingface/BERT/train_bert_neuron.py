@@ -149,7 +149,7 @@ def load_imdb_dataset(tokenizer, max_len, seed=42, reduce_lines=False, cache_dir
     
     # Tokenize datasets
     def tokenize_and_convert(dataset):
-        texts = dataset["text"]
+        texts = [str(t) for t in dataset["text"]]
         labels = dataset["label"]
         encodings = tokenizer(texts, truncation=True, padding=True, max_length=max_len)
         return SentimentDataset(encodings, labels)
