@@ -181,7 +181,7 @@ def build_model(args, device, parallel: str):
     GPA.pc.set_module_names_to_track(["BertEncoder", "BertEmbeddings", "BertPredictionHeadTransform"])  # Track BERT encoder layers
     #GPA.pc.append_module_names_to_perforate(["BertPredictionHeadTransform"])
     GPA.pc.set_using_safe_tensors(True)
-    GPA.pc.set_weight_tying_experimental(True)
+    #GPA.pc.set_weight_tying_experimental(True)
     GPA.pc.set_testing_dendrite_capacity(False)
     config = BertConfig(
         vocab_size=args.vocab_size,
@@ -197,7 +197,7 @@ def build_model(args, device, parallel: str):
     
     # Perforate the model with dendrites (minimizing loss)
     model = UPA.perforate_model(model, save_name="bert_mlm_dendritic", maximizing_score=False)
-    model.cls.predictions.decoder.set_this_output_dimensions([-1,0,-1])
+    #model.cls.predictions.decoder.set_this_output_dimensions([-1,0,-1])
     model = model.to(dtype=torch.bfloat16, device=device)
 
     if parallel == "ddp":
