@@ -178,8 +178,10 @@ def build_model(args, device, parallel: str):
     """
     # Configure PerforatedAI
     GPA.pc.set_output_dimensions([-1,0,-1])
-    GPA.pc.set_module_names_to_track(["BertEncoder", "BertEmbeddings", "BertPredictionHeadTransform"])  # Track BERT encoder layers
-    #GPA.pc.append_module_names_to_perforate(["BertPredictionHeadTransform"])
+    GPA.pc.set_module_names_to_track(["BertEncoder", "BertEmbeddings"])#"BertPredictionHeadTransform"])  # Track BERT encoder layers
+    GPA.pc.set_module_ids_to_track([".cls.predictions.decoder"])#"BertPredictionHeadTransform"])  # Track BERT encoder layers
+    
+    GPA.pc.append_module_names_to_perforate(["BertPredictionHeadTransform"])
     GPA.pc.set_using_safe_tensors(True)
     #GPA.pc.set_weight_tying_experimental(True)
     GPA.pc.set_testing_dendrite_capacity(False)
