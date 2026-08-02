@@ -177,8 +177,12 @@ def build_model(args, device, parallel: str):
     is a from-scratch MLM pretraining setup.
     """
     # Configure PerforatedAI
-    GPA.pc.set_module_ids_to_track([".layer"])  # Track BERT encoder layers
-    
+    GPA.pc.set_output_dimensions([-1,0,-1])
+    GPA.pc.set_module_names_to_track(["BertEncoder", "BertEmbeddings"])  # Track BERT encoder layers
+    GPA.pc.append_module_names_to_perforate(["BertPredictionHeadTransform"])
+    GPA.pc.set_using_safe_tensors(True)
+    GPA.pc.set_weight_tying_experimental(True)
+    GPA.pc.set_testing_dendrite_capacity(False)
     config = BertConfig(
         vocab_size=args.vocab_size,
         hidden_size=args.hidden_size,
@@ -193,7 +197,7 @@ def build_model(args, device, parallel: str):
     
     # Perforate the model with dendrites (minimizing loss)
     model = UPA.perforate_model(model, save_name="bert_mlm_dendritic", maximizing_score=False)
-    
+    model.cls.predictions.decoder.set_this_output_dimensions([-1,0,-1])
     model = model.to(dtype=torch.bfloat16, device=device)
 
     if parallel == "ddp":
@@ -283,7 +287,7 @@ def train(args):
     GPA.pai_tracker.set_optimizer(torch.optim.AdamW)
     GPA.pai_tracker.set_scheduler(None)  # No scheduler in original script
     optimArgs = {'params': model.parameters(), 'lr': args.lr}
-    optimizer, _ = GPA.pai_tracker.setup_optimizer(model, optimArgs, {})
+    optimizer = GPA.pai_tracker.setup_optimizer(model, optimArgs, {})
 
     step = 0
     done = False
@@ -362,7 +366,7 @@ def train(args):
                         print("\nModel restructured (dendrites added/incorporated)!")
                     # Reinitialize optimizer with same settings
                     optimArgs = {'params': model.parameters(), 'lr': args.lr}
-                    optimizer, _ = GPA.pai_tracker.setup_optimizer(model, optimArgs, {})
+                    optimizer = GPA.pai_tracker.setup_optimizer(model, optimArgs, {})
                 
                 # Check for improvement (early stopping logic)
                 improved = val_loss < (best_val_loss - args.min_delta)
