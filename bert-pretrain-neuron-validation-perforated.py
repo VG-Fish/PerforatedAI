@@ -178,8 +178,8 @@ def build_model(args, device, parallel: str):
     """
     # Configure PerforatedAI
     GPA.pc.set_output_dimensions([-1,0,-1])
-    GPA.pc.set_module_names_to_track(["BertEncoder", "BertEmbeddings"])  # Track BERT encoder layers
-    GPA.pc.append_module_names_to_perforate(["BertPredictionHeadTransform"])
+    GPA.pc.set_module_names_to_track(["BertEncoder", "BertEmbeddings", "BertPredictionHeadTransform"])  # Track BERT encoder layers
+    #GPA.pc.append_module_names_to_perforate(["BertPredictionHeadTransform"])
     GPA.pc.set_using_safe_tensors(True)
     GPA.pc.set_weight_tying_experimental(True)
     GPA.pc.set_testing_dendrite_capacity(False)
@@ -298,6 +298,10 @@ def train(args):
     best_step = 0
     patience_counter = 0
     
+    # Track training loss for PAI extra score
+    train_loss_accum = 0.0
+    train_loss_count = 0
+    
     if rank == 0:
         print(f"\nValidation will run every {args.eval_every} steps")
         if args.patience > 0:
@@ -330,6 +334,10 @@ def train(args):
 
             optimizer.step()
             optimizer.zero_grad()
+            
+            # Accumulate training loss for PAI tracking
+            train_loss_accum += loss.item()
+            train_loss_count += 1
 
             step_time = time.time() - step_start
             step += 1
@@ -350,6 +358,14 @@ def train(args):
                 eval_start = time.time()
                 val_loss, val_ppl = evaluate(model, val_loader, device, rank, world_size)
                 eval_time = time.time() - eval_start
+                
+                # PerforatedAI: Track training loss as extra score (helps with optimization)
+                avg_train_loss = train_loss_accum / train_loss_count if train_loss_count > 0 else 0.0
+                GPA.pai_tracker.add_extra_score(avg_train_loss, "train")
+                
+                # Reset training loss accumulation for next validation period
+                train_loss_accum = 0.0
+                train_loss_count = 0
                 
                 # PerforatedAI: Track validation score and check for restructuring
                 model, restructured, training_complete = GPA.pai_tracker.add_validation_score(val_loss, model)
