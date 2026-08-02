@@ -392,17 +392,6 @@ def train(args):
                     print(f"  Best val loss: {best_val_loss:.4f} @ step {best_step}")
                     print(f"{'='*60}\n")
                 
-                # Early stopping check (only if PAI hasn't completed)
-                if not training_complete and args.patience > 0 and patience_counter >= args.patience:
-                    if rank == 0:
-                        print(f"\nEarly stopping triggered after {patience_counter} evaluations without improvement.")
-                        print(f"Best validation loss: {best_val_loss:.4f} at step {best_step}")
-                    done = True
-                    break
-
-            if step >= args.steps:
-                done = True
-                break
         if done:
             break
 
