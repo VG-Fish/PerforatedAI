@@ -180,8 +180,8 @@ def build_model(args, device, parallel: str):
     GPA.pc.set_output_dimensions([-1,0,-1])
     GPA.pc.set_module_names_to_track(["BertEncoder", "BertEmbeddings", "BertPredictionHeadTransform"])  # Track BERT encoder layers
     #GPA.pc.append_module_names_to_perforate(["BertPredictionHeadTransform"])
-    #GPA.pc.set_using_safe_tensors(True)
-    #GPA.pc.set_weight_tying_experimental(True)
+    GPA.pc.set_using_safe_tensors(True)
+    GPA.pc.set_weight_tying_experimental(True)
     GPA.pc.set_testing_dendrite_capacity(False)
     config = BertConfig(
         vocab_size=args.vocab_size,
