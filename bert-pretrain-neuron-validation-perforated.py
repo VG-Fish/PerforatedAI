@@ -177,14 +177,15 @@ def build_model(args, device, parallel: str):
     is a from-scratch MLM pretraining setup.
     """
     # Configure PerforatedAI
-    GPA.pc.set_output_dimensions([-1,0,-1])
-    GPA.pc.set_module_names_to_track(["BertEncoder", "BertEmbeddings"])#"BertPredictionHeadTransform"])  # Track BERT encoder layers
-    GPA.pc.set_module_ids_to_track([".cls.predictions.decoder"])#"BertPredictionHeadTransform"])  # Track BERT encoder layers
-    
+    GPA.pc.set_output_dimensions([-1, -1, 0])
+    GPA.pc.set_module_names_to_track(["BertEncoder", "BertEmbeddings"])
+    GPA.pc.set_module_ids_to_track([".cls.predictions.decoder"])
     GPA.pc.append_module_names_to_perforate(["BertPredictionHeadTransform"])
     GPA.pc.set_using_safe_tensors(False)
-    #GPA.pc.set_weight_tying_experimental(True)
     GPA.pc.set_testing_dendrite_capacity(False)
+    GPA.pc.set_improvement_thresholds([0.01, 0.005, 0.001, 0])
+    GPA.pc.set_max_dendrite_tries(5)
+    
     config = BertConfig(
         vocab_size=args.vocab_size,
         hidden_size=args.hidden_size,
@@ -289,7 +290,7 @@ def train(args):
     GPA.pai_tracker.set_optimizer(torch.optim.AdamW)
     GPA.pai_tracker.set_scheduler(None)  # No scheduler in original script
     optimArgs = {'params': model.parameters(), 'lr': args.lr}
-    optimizer = GPA.pai_tracker.setup_optimizer(model, optimArgs, {})
+    optimizer, _ = GPA.pai_tracker.setup_optimizer(model, optimArgs, {})
 
     step = 0
     done = False
@@ -384,7 +385,7 @@ def train(args):
                         print("\nModel restructured (dendrites added/incorporated)!")
                     # Reinitialize optimizer with same settings
                     optimArgs = {'params': model.parameters(), 'lr': args.lr}
-                    optimizer = GPA.pai_tracker.setup_optimizer(model, optimArgs, {})
+                    optimizer, _ = GPA.pai_tracker.setup_optimizer(model, optimArgs, {})
                 
                 # Check for improvement (early stopping logic)
                 improved = val_loss < (best_val_loss - args.min_delta)
