@@ -156,6 +156,8 @@ def build_model(args, device):
     GPA.pc.append_module_names_to_perforate(["BertPredictionHeadTransform"])
     GPA.pc.set_using_safe_tensors(False)
     GPA.pc.set_testing_dendrite_capacity(False)
+    GPA.pc.set_improvement_thresholds([0.01, 0.005, 0.001, 0])
+    GPA.pc.set_max_dendrite_tries(5)
     
     config = BertConfig(
         vocab_size=args.vocab_size,
