@@ -180,7 +180,7 @@ def load_pai_model_from_dict(net, state_dict):
         for i in range(num_params):
             param_key = module_name + f".skip_weights.{i}"
             if param_key in state_dict:
-                param = nn.Parameter(torch.randn(state_dict[param_key].shape))
+                param = nn.Parameter(torch.randn(state_dict[param_key].shape, device=GPA.pc.get_device()))
                 skip_weights_list.append(param)
         module.skip_weights = skip_weights_list
 
@@ -228,9 +228,9 @@ class PerforatedModule(nn.Module):
         """
         super(PerforatedModule, self).__init__()
         self.name = name
-        self.register_buffer("node_index", torch.tensor(-1))
-        self.register_buffer("num_cycles", torch.tensor(-1))
-        self.register_buffer("view_tuple", torch.tensor(-1))
+        self.register_buffer("node_index", torch.tensor(-1, device=GPA.pc.get_device()))
+        self.register_buffer("num_cycles", torch.tensor(-1, device=GPA.pc.get_device()))
+        self.register_buffer("view_tuple", torch.tensor(-1, device=GPA.pc.get_device()))
         self.processor_array = []
         self.processor = None
         self.layer_array = nn.ModuleList([original_module])

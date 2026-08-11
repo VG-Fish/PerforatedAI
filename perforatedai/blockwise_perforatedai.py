@@ -46,7 +46,7 @@ class PAILayer(nn.Module):
         super(PAILayer, self).__init__()
         self.layer_array = layer_array
         self.register_buffer("num_cycles", num_cycles)
-        self.register_buffer("view_tuple", torch.tensor(view_tuple))
+        self.register_buffer("view_tuple", torch.tensor(view_tuple, device=GPA.pc.get_device()))
 
         self.processor_array = processor_array
         if dendrites_to_dendrites:

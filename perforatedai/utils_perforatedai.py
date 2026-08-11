@@ -842,7 +842,7 @@ def convert_network(net, layer_name=""):
 
                 pdb.set_trace()
                 print("confirmed")
-    net.register_buffer("tracker_string", torch.tensor([], dtype=torch.uint8))
+    net.register_buffer("tracker_string", torch.tensor([], dtype=torch.uint8, device=GPA.pc.get_device()))
     return net
 
 
@@ -1759,7 +1759,8 @@ def load_net_from_dict(net, state_dict):
                 "being converted that should be or vice versa"
             )
             pdb.set_trace()
-    net.to(GPA.pc.get_device())
+    if GPA.pc.get_device() != torch.device("cpu"):
+        net.to(GPA.pc.get_device())
     return net
 
 

@@ -376,7 +376,7 @@ class PAINeuronModule(nn.Module):
 
         self.register_buffer(
             "this_output_dimensions",
-            (torch.tensor(self.module_config.get_output_dimensions())),
+            torch.tensor(self.module_config.get_output_dimensions(), device=GPA.pc.get_device()),
         )
         if (self.this_output_dimensions == 0).sum() != 1:
             print(f"5 Need exactly one 0 in the input dimensions: {self.name}")
@@ -384,7 +384,7 @@ class PAINeuronModule(nn.Module):
             sys.exit(-1)
         self.register_buffer(
             "this_node_index",
-            torch.tensor(self.module_config.get_output_dimensions().index(0)),
+            torch.tensor(self.module_config.get_output_dimensions().index(0), device=GPA.pc.get_device()),
         )
         self.dendrite_modules_added = 0
 
@@ -426,7 +426,7 @@ class PAINeuronModule(nn.Module):
         # Apply per-module output_dimensions override from config if present
         _custom_dims = self.module_config.__dict__.get("_output_dimensions")
         if _custom_dims is not None:
-            self.set_this_output_dimensions(torch.tensor(_custom_dims))
+            self.set_this_output_dimensions(torch.tensor(_custom_dims, device=GPA.pc.get_device()))
         GPA.pai_tracker.add_pai_neuron_module(self)
         if self.module_config.get_perforated_backpropagation():
             MPB.set_neuron_parameters(self.main_module)
@@ -587,7 +587,7 @@ class PAINeuronModule(nn.Module):
 
         """
         if type(new_output_dimensions) is list:
-            new_output_dimensions = torch.tensor(new_output_dimensions)
+            new_output_dimensions = torch.tensor(new_output_dimensions, device=self.this_output_dimensions.device)
         delattr(self, "this_output_dimensions")
         self.register_buffer(
             "this_output_dimensions", new_output_dimensions.detach().clone()
@@ -1046,7 +1046,7 @@ def init_params(module, neuron_main_module):
     """
     for param in module.parameters():
         if param.dtype == torch.uint8:
-            param.data = torch.randint(0, 256, param.size(), dtype=torch.uint8)
+            param.data = torch.randint(0, 256, param.size(), dtype=torch.uint8, device=param.device)
         else:
             # If factoring in the main modules weights multiply the randn()
             #  by the average abs value of the main modules weights
@@ -1064,7 +1064,7 @@ def init_params(module, neuron_main_module):
             else:
                 multiplier = 1.0
             param.data = (
-                torch.randn(param.size(), dtype=param.dtype)
+                torch.randn(param.size(), dtype=param.dtype, device=param.device)
                 * GPA.pc.get_candidate_weight_initialization_multiplier()
                 * multiplier
             )
@@ -1122,7 +1122,7 @@ class PAIDendriteModule(nn.Module):
             MPB.create_extra_tensors(self)
         if output_dimensions == []:
             self.register_buffer(
-                "this_output_dimensions", torch.tensor(GPA.pc.get_output_dimensions())
+                "this_output_dimensions", torch.tensor(GPA.pc.get_output_dimensions(), device=GPA.pc.get_device())
             )
         else:
             self.register_buffer(
@@ -1133,7 +1133,7 @@ class PAIDendriteModule(nn.Module):
             print(self.this_output_dimensions)
             sys.exit(-1)
         self.register_buffer(
-            "this_node_index", torch.tensor(GPA.pc.get_output_dimensions().index(0))
+            "this_node_index", torch.tensor(GPA.pc.get_output_dimensions().index(0), device=GPA.pc.get_device())
         )
 
         # Initialize dendrite to dendrite connections
@@ -1246,7 +1246,7 @@ class PAIDendriteModule(nn.Module):
         """
 
         if type(new_output_dimensions) is list:
-            new_output_dimensions = torch.tensor(new_output_dimensions)
+            new_output_dimensions = torch.tensor(new_output_dimensions, device=self.this_output_dimensions.device)
         delattr(self, "this_output_dimensions")
         self.register_buffer(
             "this_output_dimensions", new_output_dimensions.detach().clone()
@@ -1397,7 +1397,7 @@ class PAIDendriteModule(nn.Module):
             # Copy weights/bias from correct candidates
             if self.num_dendrites == 1:
                 self.dendrites_to_dendrites = nn.ParameterList()
-                self.dendrites_to_dendrites.append(torch.tensor([]))
+                self.dendrites_to_dendrites.append(torch.tensor([], device=GPA.pc.get_device()))
             if self.num_dendrites >= 1:
                 self.dendrites_to_dendrites.append(
                     torch.nn.Parameter(
@@ -1662,7 +1662,7 @@ class DendriteValueTracker(nn.Module):
 
         """
         if type(new_output_dimensions) is list:
-            new_output_dimensions = torch.tensor(new_output_dimensions)
+            new_output_dimensions = torch.tensor(new_output_dimensions, device=self.this_output_dimensions.device)
         delattr(self, "this_output_dimensions")
         self.register_buffer(
             "this_output_dimensions", new_output_dimensions.detach().clone()
@@ -1724,9 +1724,9 @@ class DendriteValueTracker(nn.Module):
 
         for name in get_VALUE_TRACKER_ARRAYS():
             setattr(self, name, {})
-            count = 1
-            if torch.cuda.device_count() > count:
-                count = torch.cuda.device_count()
+            # Use CUDA device count when available; fall back to 1 for CPU/Trainium/XLA.
+            # Always ensure at least index 0 exists so single-device non-CUDA backends work.
+            count = max(1, torch.cuda.device_count())
             for i in range(count):
                 getattr(self, name)[i] = []
         for val_name in get_DENDRITE_SINGLE_VALUES():
