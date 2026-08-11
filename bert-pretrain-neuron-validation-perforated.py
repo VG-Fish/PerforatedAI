@@ -177,6 +177,8 @@ def build_model(args, device, parallel: str):
     is a from-scratch MLM pretraining setup.
     """
     # Configure PerforatedAI
+    GPA.pc.set_device(device)
+    GPA.pc.set_d_type(torch.bfloat16)
     GPA.pc.set_output_dimensions([-1, -1, 0])
     GPA.pc.set_module_names_to_track(["BertEncoder", "BertEmbeddings"])
     GPA.pc.set_module_ids_to_track([".cls.predictions.decoder"])

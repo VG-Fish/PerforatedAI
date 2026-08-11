@@ -1,4 +1,4 @@
-torch==2.11.0
+torch==2.12.1
 perforatedai
 perforatedbp
 datasets
