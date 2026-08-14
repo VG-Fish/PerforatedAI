@@ -45,11 +45,7 @@ npx skills add PerforatedAI/PerforatedAI -a codex -s '*'
 npx skills add PerforatedAI/PerforatedAI -a cursor -s '*'
 ```
 
-Add multiple agents in one call (`-a claude-code -a cursor`). To install just one skill, point at its subdirectory:
-
-```bash
-npx skills add https://github.com/PerforatedAI/PerforatedAI/tree/main/skills/perforatedai -a claude-code
-```
+Add multiple agents in one call (`-a claude-code -a cursor`).
 
 ### Option B - manual copy
 
